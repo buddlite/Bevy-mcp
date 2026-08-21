@@ -1,0 +1,15 @@
+[package]
+name = "bevy-mcp-e2e"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+bevy = "0.19"
+bevy-mcp-core = { path = "../../crates/bevy-mcp-core" }
+bevy-mcp-host = { path = "../../crates/bevy-mcp-host" }
+bevy-mcp-server = { path = "../../crates/bevy-mcp-server" }
+rmcp = { version = "3", features = ["server", "transport-io"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

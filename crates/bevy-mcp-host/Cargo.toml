@@ -1,0 +1,21 @@
+[package]
+name = "bevy-mcp-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bevy plugin for bevy-mcp — bridges MCP control plane and ECS"
+rust-version = "1.85"
+
+[dependencies]
+bevy = { version = "0.19", features = ["debug"] }
+bevy-mcp-core = { version = "0.1", path = "../bevy-mcp-core" }
+chrono = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

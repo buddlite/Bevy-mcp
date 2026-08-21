@@ -1,0 +1,21 @@
+pub mod command;
+pub mod deferred;
+pub mod entity_handle;
+pub mod event_capture;
+pub mod log_capture;
+pub mod operations;
+pub mod permissions;
+pub mod plugin;
+pub mod queue;
+pub mod registry;
+pub mod schedule;
+pub mod systems;
+
+pub use command::{McpCommand, McpResponse, McpResult};
+pub use event_capture::EventCapture;
+pub use log_capture::LogCapture;
+pub use operations::OperationTracker;
+pub use permissions::{McpPermissions, PermissionLevel};
+pub use plugin::BevyMcpPlugin;
+pub use queue::{McpIngressQueue, McpResultQueue};
+pub use registry::McpRegistry;

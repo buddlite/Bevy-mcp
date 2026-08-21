@@ -1,0 +1,31 @@
+[package]
+name = "bevy-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "MCP server for the Bevy game engine — enables AI agents to inspect, mutate, and control running Bevy applications"
+rust-version = "1.85"
+
+[lib]
+name = "bevy_mcp_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bevy-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+bevy-mcp-core = { version = "0.1", path = "../bevy-mcp-core" }
+rmcp = { version = "3", features = ["server", "transport-io"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

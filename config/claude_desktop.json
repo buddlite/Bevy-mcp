@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bevy": {
+      "command": "bevy-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
