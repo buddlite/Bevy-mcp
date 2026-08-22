@@ -20,7 +20,10 @@ fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
         | McpCommand::ResourceInsert { .. }
         | McpCommand::ResourceRemove { .. }
         | McpCommand::EntityReparent { .. }
-        | McpCommand::EntityDuplicate { .. } => permissions.can_mutate(),
+        | McpCommand::EntityDuplicate { .. }
+        | McpCommand::MeshSpawn { .. }
+        | McpCommand::TemplateLoad { .. } => permissions.can_mutate(),
+        McpCommand::TemplateSave { .. } => permissions.level != crate::permissions::PermissionLevel::None,
         McpCommand::InputKey { .. }
         | McpCommand::InputMouseButton { .. }
         | McpCommand::InputMouseMove { .. }
@@ -224,6 +227,14 @@ pub fn ingress_system(world: &mut World) {
                     },
                 );
             }
+            McpCommand::ResourceRemove { resource } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::ResourceRemove {
+                        resource: resource.clone(),
+                        result_id: entry.request_id,
+                    },
+                );
+            }
             McpCommand::EntityReparent { entity, parent } => {
                 world.resource_mut::<DeferredMcpCommands>().pending.push(
                     DeferredCommand::EntityReparent {
@@ -241,6 +252,47 @@ pub fn ingress_system(world: &mut World) {
                     },
                 );
             }
+            McpCommand::MeshSpawn {
+                shape,
+                size,
+                radius,
+                color,
+                metallic,
+                roughness,
+                position,
+                parent,
+            } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::MeshSpawn {
+                        shape: shape.clone(),
+                        size: *size,
+                        radius: *radius,
+                        color: *color,
+                        metallic: *metallic,
+                        roughness: *roughness,
+                        position: *position,
+                        parent: parent.clone(),
+                        result_id: entry.request_id,
+                    },
+                );
+            }
+            McpCommand::TemplateLoad {
+                name,
+                path,
+                parent,
+                position,
+            } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::TemplateLoad {
+                        name: name.clone(),
+                        path: path.clone(),
+                        parent: parent.clone(),
+                        position: *position,
+                        result_id: entry.request_id,
+                    },
+                );
+            }
+            // TemplateSave goes through the read path (read-only access to world + file I/O).
             // All other commands (reads, runtime control) are deferred too.
             _ => {
                 world
@@ -489,6 +541,16 @@ pub fn deferred_apply_system(world: &mut World) {
                     result,
                 });
             }
+            DeferredCommand::ResourceRemove {
+                resource,
+                result_id,
+            } => {
+                let result = resource_remove(world, &resource);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
             DeferredCommand::EntityReparent {
                 entity,
                 parent,
@@ -502,6 +564,38 @@ pub fn deferred_apply_system(world: &mut World) {
             }
             DeferredCommand::EntityDuplicate { entity, result_id } => {
                 let result = entity_duplicate(world, &entity);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
+            DeferredCommand::MeshSpawn {
+                shape,
+                size,
+                radius,
+                color,
+                metallic,
+                roughness,
+                position,
+                parent,
+                result_id,
+            } => {
+                let result = mesh_spawn_apply(
+                    world, &shape, size, radius, color, metallic, roughness, position, parent.as_ref(),
+                );
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
+            DeferredCommand::TemplateLoad {
+                name,
+                path,
+                parent,
+                position,
+                result_id,
+            } => {
+                let result = template_load_apply(world, &name, path.as_deref(), parent.as_ref(), position);
                 world.resource::<McpResultQueue>().push(McpResponse {
                     request_id: result_id,
                     result,
@@ -682,6 +776,7 @@ fn entity_duplicate(
 fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegistry) -> McpResult {
     match command {
         McpCommand::WorldSummary => world_summary(world),
+        McpCommand::WorldContextScan => world_context_scan(world, registry),
         McpCommand::EntityQuery {
             with_components,
             without_components,
@@ -775,6 +870,18 @@ fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegist
         McpCommand::AssetGet { path } => asset_get(world, path),
         McpCommand::AssetStatus { path } => asset_status(world, path),
         McpCommand::AssetReload { path } => asset_reload(world, path),
+        // Procedural asset commands
+        McpCommand::MeshSpawn { .. } => McpResult::error(
+            "INTERNAL",
+            "MeshSpawn should be deferred, not executed directly",
+        ),
+        McpCommand::TemplateSave { entity, name, path } => {
+            template_save(world, entity, name, path.as_deref())
+        }
+        McpCommand::TemplateLoad { .. } => McpResult::error(
+            "INTERNAL",
+            "TemplateLoad should be deferred, not executed directly",
+        ),
         // These commands require &mut World and are handled in the deferred system.
         McpCommand::ResourceUpdate { resource, value: _ } => McpResult::error(
             "INTERNAL",
@@ -818,6 +925,191 @@ fn world_summary(world: &World) -> McpResult {
         "entities": entity_count,
         "archetypes": world.archetypes().len(),
         "component_types": component_ids.len(),
+    }))
+}
+
+fn world_context_scan(world: &World, registry: &McpRegistry) -> McpResult {
+    use bevy::ecs::hierarchy::{ChildOf, Children};
+
+    // ---- (a) Iterate all entities, count, group by archetype ----
+    let mut total_entity_count: usize = 0;
+    // Map from archetype index -> (component_id set, entity count)
+    let mut archetype_map: std::collections::HashMap<
+        usize,
+        (Vec<usize>, usize),
+    > = std::collections::HashMap::new();
+
+    for entity_ref in world.iter_entities() {
+        total_entity_count += 1;
+        let arch_id = entity_ref.archetype().id().index();
+        let comp_ids: Vec<usize> = entity_ref
+            .archetype()
+            .components()
+            .map(|cid| cid.index())
+            .collect();
+        archetype_map
+            .entry(arch_id)
+            .and_modify(|(_, count)| *count += 1)
+            .or_insert_with(|| (comp_ids, 1));
+    }
+
+    // Build archetype list for JSON
+    let mut archetypes_json = Vec::new();
+    let mut arch_keys: Vec<usize> = archetype_map.keys().copied().collect();
+    arch_keys.sort();
+    for arch_id in &arch_keys {
+        let (comp_ids, count) = &archetype_map[arch_id];
+        let component_names: Vec<String> = comp_ids
+            .iter()
+            .filter_map(|cid| {
+                world
+                    .components()
+                    .get_info(bevy::ecs::component::ComponentId::new(*cid))
+                    .map(|info| info.name().to_string())
+            })
+            .collect();
+        archetypes_json.push(json!({
+            "id": arch_id,
+            "entities": count,
+            "components": component_names,
+        }));
+    }
+
+    // ---- (b) Registered component types with entity counts ----
+    let app_registry = world.resource::<AppTypeRegistry>();
+    let type_registry = app_registry.read();
+
+    // Build a map from ComponentId -> entity count by summing across archetypes
+    let mut component_entity_counts: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for (comp_ids, count) in archetype_map.values() {
+        for cid in comp_ids {
+            *component_entity_counts.entry(*cid).or_insert(0) += count;
+        }
+    }
+
+    let mut component_types_json = Vec::new();
+    for registration in type_registry.iter() {
+        let is_component = registration
+            .data::<bevy::ecs::reflect::ReflectComponent>()
+            .is_some();
+        if !is_component {
+            continue;
+        }
+        let type_info = registration.type_info();
+        let short_path = type_info.type_path_table().short_path().to_string();
+        let type_path = type_info.type_path_table().path().to_string();
+
+        // Look up entity count via ComponentId
+        let entity_count = world
+            .components()
+            .get_id(registration.type_id())
+            .and_then(|cid| component_entity_counts.get(&cid.index()).copied())
+            .unwrap_or(0);
+
+        component_types_json.push(json!({
+            "name": short_path,
+            "type_path": type_path,
+            "is_component": true,
+            "entity_count": entity_count,
+        }));
+    }
+
+    // ---- (c) Resource types ----
+    let mut resource_types_json = Vec::new();
+    for registration in type_registry.iter() {
+        if registration
+            .data::<bevy::ecs::reflect::ReflectResource>()
+            .is_some()
+        {
+            let type_info = registration.type_info();
+            resource_types_json.push(json!({
+                "name": type_info.type_path_table().short_path(),
+                "type_path": type_info.type_path_table().path(),
+            }));
+        }
+    }
+
+    // ---- (d) Hierarchy tree ----
+    fn build_context_tree(
+        world: &World,
+        entity: Entity,
+        depth: u32,
+        max_depth: u32,
+    ) -> serde_json::Value {
+        if depth >= max_depth {
+            return json!({
+                "entity_id": entity.index().index(),
+                "name": "",
+                "components": [],
+                "children": [],
+                "truncated": true,
+            });
+        }
+
+        // Gather component names for this entity
+        let entity_ref = world.get_entity(entity).unwrap();
+        let component_names: Vec<String> = entity_ref
+            .archetype()
+            .components()
+            .filter_map(|cid| {
+                world
+                    .components()
+                    .get_info(cid)
+                    .map(|info| info.name().to_string())
+            })
+            .collect();
+
+        // Get name if Name component exists
+        let name = world
+            .get::<bevy::prelude::Name>(entity)
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+
+        let children_json: Vec<serde_json::Value> =
+            if let Some(children) = world.get::<Children>(entity) {
+                children
+                    .iter()
+                    .map(|child| build_context_tree(world, child, depth + 1, max_depth))
+                    .collect()
+            } else {
+                vec![]
+            };
+
+        json!({
+            "entity_id": entity.index().index(),
+            "name": name,
+            "components": component_names,
+            "children": children_json,
+        })
+    }
+
+    // Collect root entities (those without ChildOf)
+    let mut roots_json = Vec::new();
+    for entity_ref in world.iter_entities() {
+        let entity = entity_ref.id();
+        if world.get::<ChildOf>(entity).is_none() {
+            roots_json.push(build_context_tree(world, entity, 0, 10));
+        }
+    }
+
+    // ---- (e) Runtime state ----
+    let runtime_json = json!({
+        "frame": registry.frame,
+        "paused": registry.paused,
+        "time_scale": registry.time_scale,
+    });
+
+    McpResult::success(json!({
+        "entity_count": total_entity_count,
+        "archetype_count": archetype_map.len(),
+        "archetypes": archetypes_json,
+        "component_types": component_types_json,
+        "resource_types": resource_types_json,
+        "hierarchy": {
+            "roots": roots_json,
+        },
+        "runtime": runtime_json,
     }))
 }
 
@@ -1287,6 +1579,41 @@ fn resource_update(world: &mut World, resource: &str, value: &Value) -> McpResul
     McpResult::success(json!({
         "resource": resource,
         "status": "updated"
+    }))
+}
+
+fn resource_remove(world: &mut World, resource: &str) -> McpResult {
+    let app_registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = app_registry.read();
+
+    let registration = match registry
+        .iter()
+        .find(|r| r.type_info().type_path_table().short_path() == resource)
+    {
+        Some(r) => r,
+        None => {
+            return McpResult::error(
+                "RESOURCE_NOT_REGISTERED",
+                format!("Resource '{resource}' is not registered in the type registry"),
+            );
+        }
+    };
+
+    let reflect_resource = match registration.data::<bevy::ecs::reflect::ReflectResource>() {
+        Some(rr) => rr,
+        None => {
+            return McpResult::error(
+                "RESOURCE_NOT_REFLECTED",
+                format!("Resource '{resource}' does not have ReflectResource data"),
+            );
+        }
+    };
+
+    reflect_resource.remove(world);
+
+    McpResult::success(json!({
+        "resource": resource,
+        "status": "removed"
     }))
 }
 
@@ -2033,4 +2360,293 @@ fn parse_gamepad_button(button: &str) -> Option<GamepadButton> {
         "dpad_right" => Some(GamepadButton::DPadRight),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Procedural asset generation
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn mesh_spawn_apply(
+    world: &mut World,
+    shape: &str,
+    size: f64,
+    radius: f64,
+    color: (f32, f32, f32, f32),
+    metallic: f32,
+    roughness: f32,
+    position: (f32, f32, f32),
+    parent: Option<&bevy_mcp_core::entity_handle::EntityHandle>,
+) -> McpResult {
+    use bevy::pbr::{Mesh3d, MeshMaterial3d, StandardMaterial};
+
+    let size_f32 = size as f32;
+    let radius_f32 = radius as f32;
+
+    // Create the mesh based on shape.
+    let mesh_handle = {
+        let mut meshes = world.resource_mut::<Assets<Mesh>>();
+        match shape {
+            "cube" => meshes.add(Cuboid::new(size_f32, size_f32, size_f32)),
+            "sphere" => meshes.add(Sphere::new(radius_f32)),
+            "plane" => meshes.add(Plane3d::default().mesh().size(size_f32, size_f32)),
+            "cylinder" => meshes.add(Cylinder::new(radius_f32, size_f32)),
+            "torus" => {
+                // Use radius as major radius, derive minor radius from size.
+                meshes.add(Torus::new(radius_f32, size_f32 * 0.4))
+            }
+            _ => {
+                return McpResult::error(
+                    "INVALID_SHAPE",
+                    format!("Unknown shape '{shape}'. Valid: cube, sphere, plane, cylinder, torus"),
+                );
+            }
+        }
+    };
+
+    // Create PBR material.
+    let material_handle = {
+        let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+        materials.add(StandardMaterial {
+            base_color: Color::srgba(color.0, color.1, color.2, color.3),
+            metallic,
+            roughness,
+            ..default()
+        })
+    };
+
+    // Spawn entity with mesh, material, and transform.
+    let entity = world
+        .spawn((
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material_handle),
+            Transform::from_xyz(position.0, position.1, position.2),
+        ))
+        .id();
+
+    // Parent if specified.
+    if let Some(parent_handle) = parent {
+        if let Some(parent_entity) = resolve_entity(world, parent_handle) {
+            if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
+                use bevy::ecs::hierarchy::ChildOf;
+                entity_ref.insert(ChildOf(parent_entity));
+            }
+        } else {
+            return McpResult::error(
+                "PARENT_NOT_FOUND",
+                format!("Parent entity {parent_handle} not found"),
+            );
+        }
+    }
+
+    McpResult::success(json!({
+        "handle": entity_to_uri(entity),
+        "id": entity.index().index(),
+        "shape": shape,
+        "size": size,
+        "radius": radius,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Template save / load
+// ---------------------------------------------------------------------------
+
+fn template_save(
+    world: &World,
+    handle: &bevy_mcp_core::entity_handle::EntityHandle,
+    name: &str,
+    path: Option<&str>,
+) -> McpResult {
+    let entity = match resolve_entity(world, handle) {
+        Some(e) => e,
+        None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {handle} not found")),
+    };
+
+    let app_registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = app_registry.read();
+
+    // Collect all reflected components from the entity.
+    let entity_ref = world.get_entity(entity).unwrap();
+    let mut components_json = serde_json::Map::new();
+
+    for component_id in entity_ref.archetype().components() {
+        let Some(info) = world.components().get_info(*component_id) else {
+            continue;
+        };
+        let component_name = info.name().to_string();
+
+        // Try to find the type registration and serialize via reflection.
+        let short_name = component_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(&component_name)
+            .to_string();
+
+        let registration = registry.iter().find(|r| {
+            let tp = r.type_info().type_path_table();
+            tp.short_path() == short_name || tp.path() == component_name
+        });
+
+        if let Some(registration) = registration {
+            if let Some(reflect_component) =
+                registration.data::<bevy::ecs::reflect::ReflectComponent>()
+            {
+                if let Some(reflected) = reflect_component.reflect(entity_ref) {
+                    let serializer = bevy::reflect::serde::ReflectSerializer::new(
+                        reflected.as_reflect(),
+                        &registry,
+                    );
+                    if let Ok(value) = serde_json::to_value(&serializer) {
+                        // Extract inner value: ReflectSerializer wraps in {"TypePath": value}.
+                        if let Some(obj) = value.as_object() {
+                            if let Some(inner) = obj.values().next() {
+                                components_json.insert(short_name, inner.clone());
+                                continue;
+                            }
+                        }
+                        components_json.insert(short_name, value);
+                    }
+                }
+            }
+        }
+    }
+
+    let template = json!({
+        "name": name,
+        "components": components_json,
+    });
+
+    // Write to file.
+    let file_path = match path {
+        Some(p) => p.to_string(),
+        None => format!("templates/{name}.json"),
+    };
+
+    let json_string = match serde_json::to_string_pretty(&template) {
+        Ok(s) => s,
+        Err(e) => {
+            return McpResult::error(
+                "SERIALIZATION_ERROR",
+                format!("Failed to serialize template: {e}"),
+            );
+        }
+    };
+
+    // Create parent directories if needed.
+    if let Some(parent) = std::path::Path::new(&file_path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return McpResult::error(
+                "IO_ERROR",
+                format!("Failed to create directory {}: {e}", parent.display()),
+            );
+        }
+    }
+
+    if let Err(e) = std::fs::write(&file_path, &json_string) {
+        return McpResult::error("IO_ERROR", format!("Failed to write template file: {e}"));
+    }
+
+    McpResult::success(json!({
+        "saved": true,
+        "name": name,
+        "path": file_path,
+        "component_count": components_json.len(),
+    }))
+}
+
+fn template_load_apply(
+    world: &mut World,
+    name: &str,
+    path: Option<&str>,
+    parent: Option<&bevy_mcp_core::entity_handle::EntityHandle>,
+    position: Option<(f32, f32, f32)>,
+) -> McpResult {
+    let file_path = match path {
+        Some(p) => p.to_string(),
+        None => format!("templates/{name}.json"),
+    };
+
+    let json_string = match std::fs::read_to_string(&file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return McpResult::error(
+                "IO_ERROR",
+                format!("Failed to read template file '{file_path}': {e}"),
+            );
+        }
+    };
+
+    let template: serde_json::Value = match serde_json::from_str(&json_string) {
+        Ok(v) => v,
+        Err(e) => {
+            return McpResult::error(
+                "DESERIALIZATION_ERROR",
+                format!("Failed to parse template JSON: {e}"),
+            );
+        }
+    };
+
+    let template_name = template
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(name);
+
+    let components = match template.get("components").and_then(|v| v.as_object()) {
+        Some(c) => c,
+        None => {
+            return McpResult::error(
+                "INVALID_TEMPLATE",
+                "Template JSON missing 'components' object",
+            );
+        }
+    };
+
+    // Spawn empty entity.
+    let entity = world.spawn_empty().id();
+
+    // Insert each component via reflection.
+    let mut inserted = Vec::new();
+    for (component_name, value) in components {
+        match insert_component_by_reflect(world, entity, component_name, value) {
+            McpResult::Success(_) => inserted.push(component_name.clone()),
+            McpResult::Error { code, message } => {
+                tracing::warn!(
+                    component = component_name.as_str(),
+                    code = code.as_str(),
+                    message = message.as_str(),
+                    "Skipping component during template load"
+                );
+            }
+        }
+    }
+
+    // Apply position override (update Transform if present).
+    if let Some((x, y, z)) = position {
+        if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
+            entity_ref.insert(Transform::from_xyz(x, y, z));
+        }
+    }
+
+    // Parent if specified.
+    if let Some(parent_handle) = parent {
+        if let Some(parent_entity) = resolve_entity(world, parent_handle) {
+            if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
+                use bevy::ecs::hierarchy::ChildOf;
+                entity_ref.insert(ChildOf(parent_entity));
+            }
+        } else {
+            return McpResult::error(
+                "PARENT_NOT_FOUND",
+                format!("Parent entity {parent_handle} not found"),
+            );
+        }
+    }
+
+    McpResult::success(json!({
+        "handle": entity_to_uri(entity),
+        "id": entity.index().index(),
+        "template_name": template_name,
+        "components_inserted": inserted,
+    }))
 }

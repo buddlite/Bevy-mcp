@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2024-01-01
+## [0.1.0] - 2025-06-15
 
 ### Added
 
@@ -37,3 +37,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bevy-mcp-core` — shared protocol types (no Bevy dependency)
 - `bevy-mcp-server` — MCP server over stdio (no Bevy dependency)
 - `bevy-mcp-host` — Bevy plugin bridging MCP and ECS
+
+[0.1.0]: https://github.com/buddlite/Bevy-mcp/releases/tag/v0.1.0

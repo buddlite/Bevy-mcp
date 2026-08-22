@@ -9,6 +9,8 @@ use crate::entity_handle::EntityHandle;
 pub enum McpCommand {
     // -- ECS inspection --
     WorldSummary,
+    // -- World context --
+    WorldContextScan,
     EntityQuery {
         with_components: Vec<String>,
         without_components: Vec<String>,
@@ -81,7 +83,7 @@ pub enum McpCommand {
         resource: String,
     },
 
-    // -- Hierarchy --
+    // -- Hierarchy mutation --
     EntityReparent {
         entity: EntityHandle,
         parent: Option<EntityHandle>,
@@ -192,6 +194,29 @@ pub enum McpCommand {
     UiType {
         entity: EntityHandle,
         text: String,
+    },
+
+    // -- Procedural assets --
+    MeshSpawn {
+        shape: String,
+        size: f64,
+        radius: f64,
+        color: (f32, f32, f32, f32),
+        metallic: f32,
+        roughness: f32,
+        position: (f32, f32, f32),
+        parent: Option<EntityHandle>,
+    },
+    TemplateSave {
+        entity: EntityHandle,
+        name: String,
+        path: Option<String>,
+    },
+    TemplateLoad {
+        name: String,
+        path: Option<String>,
+        parent: Option<EntityHandle>,
+        position: Option<(f32, f32, f32)>,
     },
 
     // -- Playtest --

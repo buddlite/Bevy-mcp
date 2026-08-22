@@ -59,6 +59,10 @@ pub enum DeferredCommand {
         value: Value,
         result_id: u64,
     },
+    ResourceRemove {
+        resource: String,
+        result_id: u64,
+    },
     EntityReparent {
         entity: EntityHandle,
         parent: Option<EntityHandle>,
@@ -66,6 +70,24 @@ pub enum DeferredCommand {
     },
     EntityDuplicate {
         entity: EntityHandle,
+        result_id: u64,
+    },
+    MeshSpawn {
+        shape: String,
+        size: f64,
+        radius: f64,
+        color: (f32, f32, f32, f32),
+        metallic: f32,
+        roughness: f32,
+        position: (f32, f32, f32),
+        parent: Option<EntityHandle>,
+        result_id: u64,
+    },
+    TemplateLoad {
+        name: String,
+        path: Option<String>,
+        parent: Option<EntityHandle>,
+        position: Option<(f32, f32, f32)>,
         result_id: u64,
     },
     /// A read command that should execute after mutations.

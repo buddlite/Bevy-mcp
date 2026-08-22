@@ -401,6 +401,67 @@ pub struct UiTypeParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ColorValue {
+    #[schemars(description = "Red channel (0.0-1.0)")]
+    pub r: f32,
+    #[schemars(description = "Green channel (0.0-1.0)")]
+    pub g: f32,
+    #[schemars(description = "Blue channel (0.0-1.0)")]
+    pub b: f32,
+    #[schemars(description = "Alpha channel (0.0-1.0, default 1.0)")]
+    pub a: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct Vec3Value {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeshSpawnParams {
+    #[schemars(description = "Mesh shape: 'cube', 'sphere', 'plane', 'cylinder', 'torus'")]
+    pub shape: String,
+    #[schemars(description = "Uniform size for cube/plane, height for cylinder (default 1.0)")]
+    pub size: Option<f64>,
+    #[schemars(description = "Radius for sphere/cylinder/torus (default 0.5)")]
+    pub radius: Option<f64>,
+    #[schemars(description = "Base color as {r, g, b, a?} with 0.0-1.0 values (default white)")]
+    pub color: Option<ColorValue>,
+    #[schemars(description = "Metallic value 0.0-1.0 (default 0.0)")]
+    pub metallic: Option<f32>,
+    #[schemars(description = "Roughness value 0.0-1.0 (default 0.5)")]
+    pub roughness: Option<f32>,
+    #[schemars(description = "Position as {x, y, z} (default origin)")]
+    pub position: Option<Vec3Value>,
+    #[schemars(description = "Parent entity handle URI")]
+    pub parent: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TemplateSaveParams {
+    #[schemars(description = "Entity handle URI to save as template")]
+    pub entity: String,
+    #[schemars(description = "Template name")]
+    pub name: String,
+    #[schemars(description = "File path (default: templates/{name}.json)")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TemplateLoadParams {
+    #[schemars(description = "Template name to load")]
+    pub name: String,
+    #[schemars(description = "File path override")]
+    pub path: Option<String>,
+    #[schemars(description = "Parent entity handle URI")]
+    pub parent: Option<String>,
+    #[schemars(description = "Override position as {x, y, z}")]
+    pub position: Option<Vec3Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PlaytestStepDef {
     #[schemars(
         description = "Step action: 'runtime_restart', 'runtime_step', 'input_action', 'capture_game'"
@@ -493,7 +554,10 @@ impl BevyMcpServer {
             "input": { "raw": true, "actions": false },
             "capture": { "game": false, "camera": false },
             "assets": { "inspect": false, "reload": false },
-            "diagnostics": { "render": false, "performance": true, "logs": true },
+            "diagnostics": { "render": false, "performance": true, "logs": true, "observe_events": true },
+            "ui": { "query": true, "inspect": true, "click": true, "type_text": true },
+            "procedural": { "mesh_spawn": true, "template_save": true, "template_load": true },
+            "plugins": { "list": true },
             "build": { "cargo": false, "check": false, "test": false }
         })
         .to_string()
@@ -691,6 +755,11 @@ impl BevyMcpServer {
     )]
     async fn world_summary(&self) -> String {
         self.state.call(McpCommand::WorldSummary).await
+    }
+
+    #[tool(description = "Get a comprehensive snapshot of the entire ECS world: entity count by archetype, all registered component types with field names and entity counts, all registered resources, full entity hierarchy tree, and current runtime state. One call for full project context.")]
+    async fn world_context_scan(&self) -> String {
+        self.state.call(McpCommand::WorldContextScan).await
     }
 
     #[tool(description = "Query entities by component filters. Returns matching entity handles.")]
@@ -1021,6 +1090,70 @@ impl BevyMcpServer {
         self.state
             .call(McpCommand::AssetReload { path: params.path })
             .await
+    }
+
+    // -- Procedural assets --
+
+    #[tool(description = "Spawn an entity with a procedural mesh, PBR material, and transform. Shapes: cube, sphere, plane, cylinder, torus.")]
+    async fn mesh_spawn(&self, Parameters(params): Parameters<MeshSpawnParams>) -> String {
+        let shape = params.shape.to_lowercase();
+        match shape.as_str() {
+            "cube" | "sphere" | "plane" | "cylinder" | "torus" => {}
+            _ => return error("INVALID_SHAPE", format!("Unknown shape '{}'. Valid shapes: cube, sphere, plane, cylinder, torus", params.shape)),
+        }
+
+        let parent = match params.parent {
+            Some(ref p) => match parse_entity_handle(p) {
+                Ok(handle) => Some(handle),
+                Err(message) => return error("INVALID_HANDLE", message),
+            },
+            None => None,
+        };
+
+        let color_val = params.color.unwrap_or(ColorValue { r: 1.0, g: 1.0, b: 1.0, a: None });
+        let pos_val = params.position.unwrap_or(Vec3Value { x: 0.0, y: 0.0, z: 0.0 });
+
+        self.state.call(McpCommand::MeshSpawn {
+            shape,
+            size: params.size.unwrap_or(1.0),
+            radius: params.radius.unwrap_or(0.5),
+            color: (color_val.r, color_val.g, color_val.b, color_val.a.unwrap_or(1.0)),
+            metallic: params.metallic.unwrap_or(0.0),
+            roughness: params.roughness.unwrap_or(0.5),
+            position: (pos_val.x, pos_val.y, pos_val.z),
+            parent,
+        }).await
+    }
+
+    #[tool(description = "Save an entity subtree as a JSON template. Serializes Name, Transform, and reflected components.")]
+    async fn template_save(&self, Parameters(params): Parameters<TemplateSaveParams>) -> String {
+        let entity = match parse_entity_handle(&params.entity) {
+            Ok(handle) => handle,
+            Err(message) => return error("INVALID_HANDLE", message),
+        };
+        self.state.call(McpCommand::TemplateSave {
+            entity,
+            name: params.name,
+            path: params.path,
+        }).await
+    }
+
+    #[tool(description = "Load a JSON template and spawn entities from it. Optionally override parent and position.")]
+    async fn template_load(&self, Parameters(params): Parameters<TemplateLoadParams>) -> String {
+        let parent = match params.parent {
+            Some(ref p) => match parse_entity_handle(p) {
+                Ok(handle) => Some(handle),
+                Err(message) => return error("INVALID_HANDLE", message),
+            },
+            None => None,
+        };
+        let position = params.position.map(|p| (p.x, p.y, p.z));
+        self.state.call(McpCommand::TemplateLoad {
+            name: params.name,
+            path: params.path,
+            parent,
+            position,
+        }).await
     }
 
     #[tool(description = "List cameras in the scene")]
