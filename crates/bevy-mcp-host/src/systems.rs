@@ -945,6 +945,7 @@ fn world_context_scan(world: &World, registry: &McpRegistry) -> McpResult {
         let comp_ids: Vec<usize> = entity_ref
             .archetype()
             .components()
+            .iter()
             .map(|cid| cid.index())
             .collect();
         archetype_map
@@ -1052,6 +1053,7 @@ fn world_context_scan(world: &World, registry: &McpRegistry) -> McpResult {
         let component_names: Vec<String> = entity_ref
             .archetype()
             .components()
+            .iter()
             .filter_map(|cid| {
                 world
                     .components()
@@ -1609,7 +1611,18 @@ fn resource_remove(world: &mut World, resource: &str) -> McpResult {
         }
     };
 
-    reflect_resource.remove(world);
+    let Some(component_id) = world.components().get_id(registration.type_id()) else {
+        return McpResult::error(
+            "RESOURCE_NOT_REGISTERED",
+            format!("Resource '{resource}' has no world component id"),
+        );
+    };
+    if !world.remove_resource_by_id(component_id) {
+        return McpResult::error(
+            "RESOURCE_NOT_PRESENT",
+            format!("Resource '{resource}' is not present in the world"),
+        );
+    }
 
     McpResult::success(json!({
         "resource": resource,
@@ -2378,7 +2391,7 @@ fn mesh_spawn_apply(
     position: (f32, f32, f32),
     parent: Option<&bevy_mcp_core::entity_handle::EntityHandle>,
 ) -> McpResult {
-    use bevy::pbr::{Mesh3d, MeshMaterial3d, StandardMaterial};
+    use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 
     let size_f32 = size as f32;
     let radius_f32 = radius as f32;
@@ -2410,7 +2423,7 @@ fn mesh_spawn_apply(
         materials.add(StandardMaterial {
             base_color: Color::srgba(color.0, color.1, color.2, color.3),
             metallic,
-            roughness,
+            perceptual_roughness: roughness,
             ..default()
         })
     };

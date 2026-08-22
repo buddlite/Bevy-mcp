@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +15,7 @@ use bevy_mcp_core::command::{McpCommand, McpResponse, McpResult};
 use serde_json::{Value, json};
 
 use crate::agent_api::{McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
-use crate::change_tracking::{WorldChangeTracker, component_name_matches};
+use crate::change_tracking::WorldChangeTracker;
 use crate::entity_handle::{entity_to_uri, resolve_entity};
 use crate::permissions::{McpPermissions, PermissionLevel};
 use crate::queue::{McpIngressQueue, McpResultQueue};
@@ -606,7 +605,7 @@ fn children_match(world: &World, entity_ref: &EntityRef<'_>, required: &[bevy::e
     required.iter().all(|required_id| {
         children.iter().any(|child| {
             world
-                .get_entity(*child)
+                .get_entity(child)
                 .is_ok_and(|child_ref| child_ref.contains_id(*required_id))
         })
     })
@@ -700,7 +699,7 @@ fn reflected_component_json(
 
 fn unwrap_reflect_value(value: Value) -> Value {
     match value {
-        Value::Object(mut map) if map.len() == 1 => map
+        Value::Object(map) if map.len() == 1 => map
             .into_iter()
             .next()
             .map(|(_, value)| value)
