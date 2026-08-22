@@ -1,15 +1,10 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-
 use bevy_mcp_core::advanced::{AdvancedEntityQuery, QueryCondition};
-use bevy_mcp_core::command::{McpCommand, McpResult};
+use bevy_mcp_core::command::McpCommand;
 use bevy_mcp_core::debug::{
     DebugCondition, DebugPlaytestPlan, DebugPlaytestStep, DebugRequest, EvidenceOptions,
     WatchpointSpec, encode_debug_request,
 };
 use bevy_mcp_core::entity_handle::EntityHandle;
-use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerInfo,
@@ -21,38 +16,22 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::advanced_tools::{AdvancedEntityQueryParams, UnifiedBevyMcpServer};
+use crate::response_dispatcher::McpResponseDispatcher;
 use crate::tools::BevyMcpState;
 
 #[derive(Clone)]
 struct DebugMcpState {
-    ingress: McpIngressQueue,
-    results: McpResultQueue,
-    connected: Arc<std::sync::atomic::AtomicBool>,
-    next_id: Arc<AtomicU64>,
-    pending: Arc<Mutex<HashMap<u64, McpResult>>>,
+    dispatcher: McpResponseDispatcher,
 }
 
 impl DebugMcpState {
     fn from_base(state: &BevyMcpState) -> Self {
         Self {
-            ingress: state.ingress.clone(),
-            results: state.results.clone(),
-            connected: state.connected.clone(),
-            next_id: Arc::new(AtomicU64::new(1 << 62)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            dispatcher: state.dispatcher.clone(),
         }
     }
 
     async fn call(&self, request: DebugRequest) -> String {
-        if !self.connected.load(Ordering::Relaxed) {
-            return serde_json::json!({
-                "error": "RUNTIME_NOT_RUNNING",
-                "message": "No embedded Bevy application is connected."
-            })
-            .to_string();
-        }
-
-        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let operation_id = match encode_debug_request(&request) {
             Ok(value) => value,
             Err(error) => {
@@ -63,56 +42,22 @@ impl DebugMcpState {
                 .to_string();
             }
         };
-        self.ingress.push(
-            request_id,
-            McpCommand::OperationStatus {
-                operation_id: Some(operation_id),
-            },
-        );
-
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if let Some(result) = self.pending.lock().unwrap().remove(&request_id) {
-                return format_result(result);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return serde_json::json!({
-                    "error": "TIMEOUT",
-                    "message": "Bevy app did not respond within 5 seconds"
-                })
-                .to_string();
-            }
-
-            for response in self.results.drain() {
-                if response.request_id == request_id {
-                    return format_result(response.result);
-                }
-                self.pending
-                    .lock()
-                    .unwrap()
-                    .insert(response.request_id, response.result);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        }
-    }
-}
-
-fn format_result(result: McpResult) -> String {
-    match result {
-        McpResult::Success(value) => {
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".into())
-        }
-        McpResult::Error { code, message } => serde_json::json!({
-            "error": code,
-            "message": message,
-        })
-        .to_string(),
+        self.dispatcher
+            .call(
+                McpCommand::OperationStatus {
+                    operation_id: Some(operation_id),
+                },
+                std::time::Duration::from_secs(5),
+            )
+            .await
     }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EvidenceParams {
-    #[schemars(description = "How many completed frames of ECS/resource deltas to attach (default 120).")]
+    #[schemars(
+        description = "How many completed frames of ECS/resource deltas to attach (default 120)."
+    )]
     pub changes_frames: Option<u64>,
     #[schemars(description = "Maximum recent log entries to attach (default 50).")]
     pub logs_limit: Option<u32>,
@@ -120,25 +65,33 @@ pub struct EvidenceParams {
     pub events_limit: Option<u32>,
     pub include_states: Option<bool>,
     pub include_system_timings: Option<bool>,
-    #[schemars(description = "Capture the primary window when evidence is created (default true).")]
+    #[schemars(
+        description = "Capture the primary window when evidence is created (default true)."
+    )]
     pub screenshot: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ConditionParams {
-    #[schemars(description = "Condition kind: entity_exists, query_count, entity_field, resource_field, state_equals, log_contains, change_occurred, or frame_at_least.")]
+    #[schemars(
+        description = "Condition kind: entity_exists, query_count, entity_field, resource_field, state_equals, log_contains, change_occurred, or frame_at_least."
+    )]
     pub kind: String,
     #[schemars(description = "Entity handle for entity_exists/entity_field/change_occurred.")]
     pub entity: Option<String>,
     #[schemars(description = "Advanced query for query_count.")]
     pub query: Option<AdvancedEntityQueryParams>,
-    #[schemars(description = "Comparison operator for query_count/entity_field/resource_field: eq, ne, lt, lte, gt, gte, contains.")]
+    #[schemars(
+        description = "Comparison operator for query_count/entity_field/resource_field: eq, ne, lt, lte, gt, gte, contains."
+    )]
     pub op: Option<String>,
     #[schemars(description = "Expected comparison value, or exact state value for state_equals.")]
     pub value: Option<Value>,
     #[schemars(description = "Component for entity_field/change_occurred.")]
     pub component: Option<String>,
-    #[schemars(description = "Dot-separated reflected field path for entity_field/resource_field. Empty string compares the whole value.")]
+    #[schemars(
+        description = "Dot-separated reflected field path for entity_field/resource_field. Empty string compares the whole value."
+    )]
     pub field: Option<String>,
     #[schemars(description = "Resource for resource_field/change_occurred.")]
     pub resource: Option<String>,
@@ -156,7 +109,9 @@ pub struct ConditionParams {
 pub struct WatchpointAddParams {
     pub name: String,
     pub condition: ConditionParams,
-    #[schemars(description = "Pause the MCP runtime on the first frame where the condition becomes true.")]
+    #[schemars(
+        description = "Pause the MCP runtime on the first frame where the condition becomes true."
+    )]
     pub pause_on_trigger: Option<bool>,
     #[schemars(description = "Disable after the first trigger (default true).")]
     pub once: Option<bool>,
@@ -169,8 +124,22 @@ pub struct IdParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NameParams {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReplayStartParams {
+    pub recording_id: String,
+    #[schemars(description = "Optional checkpoint restored immediately before replay.")]
+    pub checkpoint_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PlaytestStepParams {
-    #[schemars(description = "Step type: semantic_action, state_transition, key, step_frames, wait, assert, or capture.")]
+    #[schemars(
+        description = "Step type: semantic_action, state_transition, key, step_frames, wait, assert, or capture."
+    )]
     pub r#type: String,
     pub action: Option<String>,
     pub args: Option<Value>,
@@ -340,11 +309,10 @@ impl DebugBevyMcpServer {
 
 #[tool_router(server_handler)]
 impl DebugBevyMcpServer {
-    #[tool(description = "Add a frame-evaluated debugger watchpoint. It can pause on a condition edge and automatically attach recent world deltas, logs, events, states, system timings, and a screenshot.")]
-    async fn watchpoint_add(
-        &self,
-        Parameters(params): Parameters<WatchpointAddParams>,
-    ) -> String {
+    #[tool(
+        description = "Add a frame-evaluated debugger watchpoint. It can pause on a condition edge and automatically attach recent world deltas, logs, events, states, system timings, and a screenshot."
+    )]
+    async fn watchpoint_add(&self, Parameters(params): Parameters<WatchpointAddParams>) -> String {
         let condition = match condition_from_params(params.condition) {
             Ok(condition) => condition,
             Err(message) => {
@@ -365,7 +333,9 @@ impl DebugBevyMcpServer {
             .await
     }
 
-    #[tool(description = "List debugger watchpoints including trigger state, last evaluation, and resolved evidence/screenshot status.")]
+    #[tool(
+        description = "List debugger watchpoints including trigger state, last evaluation, and resolved evidence/screenshot status."
+    )]
     async fn watchpoint_list(&self) -> String {
         self.state.call(DebugRequest::WatchpointList).await
     }
@@ -382,11 +352,10 @@ impl DebugBevyMcpServer {
         self.state.call(DebugRequest::WatchpointClear).await
     }
 
-    #[tool(description = "Start a non-blocking, frame-driven agent playtest. Steps can invoke semantic actions, transition states, inject keys, wait, assert, step frames, and capture screenshots. Failures automatically collect an evidence bundle.")]
-    async fn playtest_start(
-        &self,
-        Parameters(params): Parameters<PlaytestStartParams>,
-    ) -> String {
+    #[tool(
+        description = "Start a non-blocking, frame-driven agent playtest. Steps can invoke semantic actions, transition states, inject keys, wait, assert, step frames, and capture screenshots. Failures automatically collect an evidence bundle."
+    )]
+    async fn playtest_start(&self, Parameters(params): Parameters<PlaytestStartParams>) -> String {
         let mut steps = Vec::with_capacity(params.steps.len());
         for (index, step) in params.steps.into_iter().enumerate() {
             match step_from_params(step) {
@@ -412,7 +381,9 @@ impl DebugBevyMcpServer {
             .await
     }
 
-    #[tool(description = "Read a playtest's live progress, step results, failure details, evidence bundle, and screenshot completion status.")]
+    #[tool(
+        description = "Read a playtest's live progress, step results, failure details, evidence bundle, and screenshot completion status."
+    )]
     async fn playtest_status(&self, Parameters(params): Parameters<IdParams>) -> String {
         self.state
             .call(DebugRequest::PlaytestStatus { id: params.id })
@@ -430,15 +401,82 @@ impl DebugBevyMcpServer {
             .call(DebugRequest::PlaytestCancel { id: params.id })
             .await
     }
+
+    #[tool(
+        description = "Create a deterministic checkpoint from resources/custom adapters registered by the game."
+    )]
+    async fn checkpoint_create(&self, Parameters(params): Parameters<NameParams>) -> String {
+        self.state
+            .call(DebugRequest::CheckpointCreate { name: params.name })
+            .await
+    }
+
+    #[tool(description = "List deterministic checkpoints and current checkpoint adapter coverage.")]
+    async fn checkpoint_list(&self) -> String {
+        self.state.call(DebugRequest::CheckpointList).await
+    }
+
+    #[tool(
+        description = "Restore a deterministic checkpoint. Only explicitly registered checkpoint state is modified."
+    )]
+    async fn checkpoint_restore(&self, Parameters(params): Parameters<IdParams>) -> String {
+        self.state
+            .call(DebugRequest::CheckpointRestore { id: params.id })
+            .await
+    }
+
+    #[tool(
+        description = "Start recording semantic actions, state transitions, and debugger key injections with frame offsets."
+    )]
+    async fn recording_start(&self, Parameters(params): Parameters<NameParams>) -> String {
+        self.state
+            .call(DebugRequest::RecordingStart { name: params.name })
+            .await
+    }
+
+    #[tool(description = "Stop and persist the active deterministic action recording.")]
+    async fn recording_stop(&self) -> String {
+        self.state.call(DebugRequest::RecordingStop).await
+    }
+
+    #[tool(description = "List saved deterministic action recordings.")]
+    async fn recording_list(&self) -> String {
+        self.state.call(DebugRequest::RecordingList).await
+    }
+
+    #[tool(
+        description = "Restore an optional checkpoint and replay a saved action recording at its original frame offsets."
+    )]
+    async fn replay_start(&self, Parameters(params): Parameters<ReplayStartParams>) -> String {
+        self.state
+            .call(DebugRequest::ReplayStart {
+                recording_id: params.recording_id,
+                checkpoint_id: params.checkpoint_id,
+            })
+            .await
+    }
+
+    #[tool(description = "Read live deterministic replay progress and failure state.")]
+    async fn replay_status(&self, Parameters(params): Parameters<IdParams>) -> String {
+        self.state
+            .call(DebugRequest::ReplayStatus { id: params.id })
+            .await
+    }
+
+    #[tool(description = "Cancel a running deterministic replay.")]
+    async fn replay_cancel(&self, Parameters(params): Parameters<IdParams>) -> String {
+        self.state
+            .call(DebugRequest::ReplayCancel { id: params.id })
+            .await
+    }
 }
 
-/// Top-level MCP server exposing legacy, advanced, and debugger/playtest tools while ensuring
-/// only one tool call drains the shared response queue at a time.
+/// Top-level MCP server exposing legacy, advanced, and debugger/playtest tools.
+/// The shared response dispatcher safely supports concurrent calls across all surfaces.
 #[derive(Clone)]
 pub struct AgentBevyMcpServer {
     base: UnifiedBevyMcpServer,
     debug: DebugBevyMcpServer,
-    call_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AgentBevyMcpServer {
@@ -447,7 +485,6 @@ impl AgentBevyMcpServer {
         Self {
             base: UnifiedBevyMcpServer::new(state),
             debug,
-            call_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -462,7 +499,6 @@ impl ServerHandler for AgentBevyMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let _guard = self.call_gate.lock().await;
         if self.debug.get_tool(request.name.as_ref()).is_some() {
             self.debug.call_tool(request, context).await
         } else {
@@ -475,13 +511,18 @@ impl ServerHandler for AgentBevyMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut base = self.base.list_tools(request.clone(), context.clone()).await?;
+        let mut base = self
+            .base
+            .list_tools(request.clone(), context.clone())
+            .await?;
         let debug = self.debug.list_tools(request, context).await?;
         base.tools.extend(debug.tools);
         Ok(base)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.debug.get_tool(name).or_else(|| self.base.get_tool(name))
+        self.debug
+            .get_tool(name)
+            .or_else(|| self.base.get_tool(name))
     }
 }

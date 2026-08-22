@@ -16,7 +16,11 @@ use serde_json::{Value, json};
 
 use crate::agent_api::{McpActionRegistry, McpStateRegistry, McpSystemTimings};
 use crate::change_tracking::WorldChangeTracker;
-use crate::entity_handle::{entity_to_uri, resolve_entity};
+use crate::checkpoint::{
+    McpCheckpointRegistry, McpCheckpointStore, McpRecorder, RecordedAction, ReplayStatus,
+    StoredCheckpoint,
+};
+use crate::entity_handle::resolve_entity;
 use crate::event_capture::EventCapture;
 use crate::log_capture::LogCapture;
 use crate::permissions::{McpPermissions, PermissionLevel};
@@ -114,7 +118,9 @@ pub fn debug_ingress_system(world: &mut World) {
                     },
                 ),
             },
-            command => world.resource::<McpIngressQueue>().push(request_id, command),
+            command => world
+                .resource::<McpIngressQueue>()
+                .push(request_id, command),
         }
     }
 }
@@ -149,6 +155,8 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
                     evidence: None,
                 },
             );
+            drop(debugger);
+            register_condition_tracking_interests(world, &spec.condition);
             push_result(
                 world,
                 request_id,
@@ -170,17 +178,34 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
             );
         }
         DebugRequest::WatchpointRemove { id } => {
-            let removed = world.resource_mut::<McpDebugger>().watchpoints.remove(&id).is_some();
+            let removed = world
+                .resource_mut::<McpDebugger>()
+                .watchpoints
+                .remove(&id)
+                .is_some();
             if removed {
-                push_result(world, request_id, McpResult::success(json!({ "removed": id })));
+                push_result(
+                    world,
+                    request_id,
+                    McpResult::success(json!({ "removed": id })),
+                );
             } else {
-                push_error(world, request_id, "WATCHPOINT_NOT_FOUND", format!("Watchpoint '{id}' not found"));
+                push_error(
+                    world,
+                    request_id,
+                    "WATCHPOINT_NOT_FOUND",
+                    format!("Watchpoint '{id}' not found"),
+                );
             }
         }
         DebugRequest::WatchpointClear => {
             let count = world.resource::<McpDebugger>().watchpoints.len();
             world.resource_mut::<McpDebugger>().watchpoints.clear();
-            push_result(world, request_id, McpResult::success(json!({ "cleared": count })));
+            push_result(
+                world,
+                request_id,
+                McpResult::success(json!({ "cleared": count })),
+            );
         }
         DebugRequest::PlaytestStart { plan } => start_playtest(world, request_id, plan),
         DebugRequest::PlaytestStatus { id } => {
@@ -191,7 +216,12 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
                     request_id,
                     McpResult::success(playtest_json(session, &debugger)),
                 ),
-                None => push_error(world, request_id, "PLAYTEST_NOT_FOUND", format!("Playtest '{id}' not found")),
+                None => push_error(
+                    world,
+                    request_id,
+                    "PLAYTEST_NOT_FOUND",
+                    format!("Playtest '{id}' not found"),
+                ),
             }
         }
         DebugRequest::PlaytestList => {
@@ -215,10 +245,207 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
                 Some(session) if session.status == PlaytestStatus::Running => {
                     session.status = PlaytestStatus::Cancelled;
                     session.finished_frame = Some(frame);
-                    push_result(world, request_id, McpResult::success(json!({ "cancelled": id })));
+                    push_result(
+                        world,
+                        request_id,
+                        McpResult::success(json!({ "cancelled": id })),
+                    );
                 }
-                Some(_) => push_error(world, request_id, "PLAYTEST_NOT_RUNNING", format!("Playtest '{id}' is not running")),
-                None => push_error(world, request_id, "PLAYTEST_NOT_FOUND", format!("Playtest '{id}' not found")),
+                Some(_) => push_error(
+                    world,
+                    request_id,
+                    "PLAYTEST_NOT_RUNNING",
+                    format!("Playtest '{id}' is not running"),
+                ),
+                None => push_error(
+                    world,
+                    request_id,
+                    "PLAYTEST_NOT_FOUND",
+                    format!("Playtest '{id}' not found"),
+                ),
+            }
+        }
+        DebugRequest::CheckpointCreate { name } => {
+            let frame = current_frame(world);
+            let captured = world.resource_scope(|world, registry: Mut<McpCheckpointRegistry>| {
+                registry.capture(world)
+            });
+            match captured {
+                Ok(values) => {
+                    let mut store = world.resource_mut::<McpCheckpointStore>();
+                    let id = store.next_id();
+                    store.insert(StoredCheckpoint {
+                        id: id.clone(),
+                        name: name.clone(),
+                        frame,
+                        values,
+                    });
+                    drop(store);
+                    let coverage = world.resource::<McpCheckpointRegistry>().coverage();
+                    push_result(
+                        world,
+                        request_id,
+                        McpResult::success(
+                            json!({ "id": id, "name": name, "frame": frame, "coverage": coverage }),
+                        ),
+                    );
+                }
+                Err(error) => push_error(world, request_id, "CHECKPOINT_CAPTURE_FAILED", error),
+            }
+        }
+        DebugRequest::CheckpointList => {
+            let checkpoints = world.resource::<McpCheckpointStore>().list();
+            let coverage = world.resource::<McpCheckpointRegistry>().coverage();
+            push_result(
+                world,
+                request_id,
+                McpResult::success(json!({ "checkpoints": checkpoints, "coverage": coverage })),
+            );
+        }
+        DebugRequest::CheckpointRestore { id } => {
+            let checkpoint = world.resource::<McpCheckpointStore>().get(&id).cloned();
+            match checkpoint {
+                Some(checkpoint) => {
+                    let restored =
+                        world.resource_scope(|world, registry: Mut<McpCheckpointRegistry>| {
+                            registry.restore(world, &checkpoint.values)
+                        });
+                    match restored {
+                        Ok(()) => push_result(
+                            world,
+                            request_id,
+                            McpResult::success(
+                                json!({ "restored": id, "source_frame": checkpoint.frame, "frame": current_frame(world) }),
+                            ),
+                        ),
+                        Err(error) => {
+                            push_error(world, request_id, "CHECKPOINT_RESTORE_FAILED", error)
+                        }
+                    }
+                }
+                None => push_error(
+                    world,
+                    request_id,
+                    "CHECKPOINT_NOT_FOUND",
+                    format!("Checkpoint '{id}' not found"),
+                ),
+            }
+        }
+        DebugRequest::RecordingStart { name } => {
+            let frame = current_frame(world);
+            let result = world.resource_mut::<McpRecorder>().start(name, frame);
+            match result {
+                Ok(id) => push_result(
+                    world,
+                    request_id,
+                    McpResult::success(json!({ "id": id, "start_frame": frame })),
+                ),
+                Err(error) => push_error(world, request_id, "RECORDING_START_FAILED", error),
+            }
+        }
+        DebugRequest::RecordingStop => match world.resource_mut::<McpRecorder>().stop() {
+            Ok(recording) => push_result(
+                world,
+                request_id,
+                McpResult::success(
+                    json!({ "id": recording.id, "name": recording.name, "events": recording.events.len() }),
+                ),
+            ),
+            Err(error) => push_error(world, request_id, "RECORDING_STOP_FAILED", error),
+        },
+        DebugRequest::RecordingList => {
+            let rows = world.resource::<McpRecorder>().list_recordings();
+            push_result(
+                world,
+                request_id,
+                McpResult::success(json!({ "recordings": rows })),
+            );
+        }
+        DebugRequest::ReplayStart {
+            recording_id,
+            checkpoint_id,
+        } => {
+            if let Err(error) = world
+                .resource::<McpRecorder>()
+                .validate_replay_start(&recording_id)
+            {
+                push_error(world, request_id, "REPLAY_START_FAILED", error);
+                return;
+            }
+
+            if let Some(checkpoint_id) = checkpoint_id.as_ref() {
+                let checkpoint = world
+                    .resource::<McpCheckpointStore>()
+                    .get(checkpoint_id)
+                    .cloned();
+                let Some(checkpoint) = checkpoint else {
+                    push_error(
+                        world,
+                        request_id,
+                        "CHECKPOINT_NOT_FOUND",
+                        format!("Checkpoint '{checkpoint_id}' not found"),
+                    );
+                    return;
+                };
+                if let Err(error) =
+                    world.resource_scope(|world, registry: Mut<McpCheckpointRegistry>| {
+                        registry.restore(world, &checkpoint.values)
+                    })
+                {
+                    push_error(world, request_id, "CHECKPOINT_RESTORE_FAILED", error);
+                    return;
+                }
+            }
+            let frame = current_frame(world);
+            match world.resource_mut::<McpRecorder>().start_replay(
+                recording_id,
+                checkpoint_id,
+                frame,
+            ) {
+                Ok(id) => push_result(
+                    world,
+                    request_id,
+                    McpResult::success(
+                        json!({ "id": id, "status": "running", "start_frame": frame }),
+                    ),
+                ),
+                Err(error) => push_error(world, request_id, "REPLAY_START_FAILED", error),
+            }
+        }
+        DebugRequest::ReplayStatus { id } => {
+            match world.resource::<McpRecorder>().replay_json(&id) {
+                Some(value) => push_result(world, request_id, McpResult::success(value)),
+                None => push_error(
+                    world,
+                    request_id,
+                    "REPLAY_NOT_FOUND",
+                    format!("Replay '{id}' not found"),
+                ),
+            }
+        }
+        DebugRequest::ReplayCancel { id } => {
+            let mut recorder = world.resource_mut::<McpRecorder>();
+            match recorder.replays.get_mut(&id) {
+                Some(replay) if replay.status == ReplayStatus::Running => {
+                    replay.status = ReplayStatus::Cancelled;
+                    push_result(
+                        world,
+                        request_id,
+                        McpResult::success(json!({ "cancelled": id })),
+                    );
+                }
+                Some(_) => push_error(
+                    world,
+                    request_id,
+                    "REPLAY_NOT_RUNNING",
+                    format!("Replay '{id}' is not running"),
+                ),
+                None => push_error(
+                    world,
+                    request_id,
+                    "REPLAY_NOT_FOUND",
+                    format!("Replay '{id}' not found"),
+                ),
             }
         }
     }
@@ -226,10 +453,16 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
 
 fn debug_request_allowed(request: &DebugRequest, permissions: &McpPermissions) -> bool {
     match request {
-        DebugRequest::PlaytestStart { .. } | DebugRequest::PlaytestCancel { .. } => {
+        DebugRequest::PlaytestStart { .. }
+        | DebugRequest::PlaytestCancel { .. }
+        | DebugRequest::ReplayStart { .. }
+        | DebugRequest::ReplayCancel { .. } => {
             permissions.can_control_runtime() && permissions.can_inject_input()
         }
-        DebugRequest::WatchpointAdd { spec } if spec.pause_on_trigger => permissions.can_control_runtime(),
+        DebugRequest::CheckpointRestore { .. } => permissions.can_mutate(),
+        DebugRequest::WatchpointAdd { spec } if spec.pause_on_trigger => {
+            permissions.can_control_runtime()
+        }
         _ => permissions.level != PermissionLevel::None,
     }
 }
@@ -272,6 +505,16 @@ fn start_playtest(world: &mut World, request_id: u64, plan: DebugPlaytestPlan) {
         },
     );
     drop(debugger);
+
+    for step in &plan.steps {
+        match step {
+            DebugPlaytestStep::Wait { condition, .. }
+            | DebugPlaytestStep::Assert { condition, .. } => {
+                register_condition_tracking_interests(world, condition)
+            }
+            _ => {}
+        }
+    }
 
     push_result(
         world,
@@ -343,7 +586,59 @@ pub fn debug_tick_system(world: &mut World) {
         debugger.playtests.insert(id, session);
     }
 
+    tick_replays(world, frame);
     world.insert_resource(debugger);
+    reconcile_dynamic_tracking_interests(world);
+}
+
+fn tick_replays(world: &mut World, frame: u64) {
+    let mut recorder = world.remove_resource::<McpRecorder>().unwrap_or_default();
+    let ids: Vec<String> = recorder
+        .replays
+        .iter()
+        .filter(|(_, r)| r.status == ReplayStatus::Running)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        let Some(mut replay) = recorder.replays.remove(&id) else {
+            continue;
+        };
+        let Some(recording) = recorder.recordings.get(&replay.recording_id).cloned() else {
+            replay.status = ReplayStatus::Failed;
+            replay.failure = Some(format!("Recording '{}' disappeared", replay.recording_id));
+            recorder.replays.insert(id, replay);
+            continue;
+        };
+        while let Some(event) = recording.events.get(replay.next_event) {
+            if frame.saturating_sub(replay.start_frame) < event.offset_frames {
+                break;
+            }
+            let result = match &event.action {
+                RecordedAction::SemanticAction { action, args } => world
+                    .resource_scope(|world, actions: Mut<McpActionRegistry>| {
+                        actions.invoke(action, world, args.clone())
+                    })
+                    .map(|_| ()),
+                RecordedAction::StateTransition { state, value } => world
+                    .resource_scope(|world, states: Mut<McpStateRegistry>| {
+                        states.set(state, world, value.clone())
+                    })
+                    .map(|_| ()),
+                RecordedAction::Key { key, pressed } => apply_key(world, key, *pressed),
+            };
+            if let Err(error) = result {
+                replay.status = ReplayStatus::Failed;
+                replay.failure = Some(error);
+                break;
+            }
+            replay.next_event += 1;
+        }
+        if replay.status == ReplayStatus::Running && replay.next_event >= recording.events.len() {
+            replay.status = ReplayStatus::Passed;
+        }
+        recorder.replays.insert(id, replay);
+    }
+    world.insert_resource(recorder);
 }
 
 fn advance_playtest(
@@ -364,15 +659,25 @@ fn advance_playtest(
         let step = session.plan.steps[session.step_index].clone();
         match step {
             DebugPlaytestStep::SemanticAction { action, args } => {
+                let requested_args = args.clone();
                 let result = world.resource_scope(|world, actions: Mut<McpActionRegistry>| {
                     actions.invoke(&action, world, args)
                 });
                 match result {
-                    Ok(value) => complete_step(session, frame, json!({
-                        "type": "semantic_action",
-                        "action": action,
-                        "result": value,
-                    })),
+                    Ok(value) => {
+                        world.resource_mut::<McpRecorder>().record(
+                            frame,
+                            RecordedAction::SemanticAction {
+                                action: action.clone(),
+                                args: requested_args,
+                            },
+                        );
+                        complete_step(
+                            session,
+                            frame,
+                            json!({ "type": "semantic_action", "action": action, "result": value }),
+                        );
+                    }
                     Err(error) => {
                         fail_playtest(world, debugger, session, frame, "ACTION_FAILED", error);
                         return;
@@ -380,27 +685,53 @@ fn advance_playtest(
                 }
             }
             DebugPlaytestStep::StateTransition { state, value } => {
+                let requested_value = value.clone();
                 let result = world.resource_scope(|world, states: Mut<McpStateRegistry>| {
                     states.set(&state, world, value)
                 });
                 match result {
-                    Ok(value) => complete_step(session, frame, json!({
-                        "type": "state_transition",
-                        "state": state,
-                        "result": value,
-                    })),
+                    Ok(result_value) => {
+                        world.resource_mut::<McpRecorder>().record(
+                            frame,
+                            RecordedAction::StateTransition {
+                                state: state.clone(),
+                                value: requested_value,
+                            },
+                        );
+                        complete_step(
+                            session,
+                            frame,
+                            json!({ "type": "state_transition", "state": state, "result": result_value }),
+                        );
+                    }
                     Err(error) => {
-                        fail_playtest(world, debugger, session, frame, "STATE_TRANSITION_FAILED", error);
+                        fail_playtest(
+                            world,
+                            debugger,
+                            session,
+                            frame,
+                            "STATE_TRANSITION_FAILED",
+                            error,
+                        );
                         return;
                     }
                 }
             }
             DebugPlaytestStep::Key { key, pressed } => match apply_key(world, &key, pressed) {
-                Ok(()) => complete_step(session, frame, json!({
-                    "type": "key",
-                    "key": key,
-                    "pressed": pressed,
-                })),
+                Ok(()) => {
+                    world.resource_mut::<McpRecorder>().record(
+                        frame,
+                        RecordedAction::Key {
+                            key: key.clone(),
+                            pressed,
+                        },
+                    );
+                    complete_step(
+                        session,
+                        frame,
+                        json!({ "type": "key", "key": key, "pressed": pressed }),
+                    );
+                }
                 Err(error) => {
                     fail_playtest(world, debugger, session, frame, "INPUT_FAILED", error);
                     return;
@@ -410,11 +741,15 @@ fn advance_playtest(
                 let started = *session.step_started_frame.get_or_insert(frame);
                 let elapsed = frame.saturating_sub(started);
                 if elapsed >= frames as u64 {
-                    complete_step(session, frame, json!({
-                        "type": "step_frames",
-                        "frames": frames,
-                        "elapsed_frames": elapsed,
-                    }));
+                    complete_step(
+                        session,
+                        frame,
+                        json!({
+                            "type": "step_frames",
+                            "frames": frames,
+                            "elapsed_frames": elapsed,
+                        }),
+                    );
                 } else {
                     return;
                 }
@@ -426,12 +761,16 @@ fn advance_playtest(
                 let started = *session.step_started_frame.get_or_insert(frame);
                 match evaluate_condition(world, &condition, frame) {
                     Ok(evaluation) if evaluation.matched => {
-                        complete_step(session, frame, json!({
-                            "type": "wait",
-                            "matched": true,
-                            "actual": evaluation.actual,
-                            "elapsed_frames": frame.saturating_sub(started),
-                        }));
+                        complete_step(
+                            session,
+                            frame,
+                            json!({
+                                "type": "wait",
+                                "matched": true,
+                                "actual": evaluation.actual,
+                                "elapsed_frames": frame.saturating_sub(started),
+                            }),
+                        );
                     }
                     Ok(evaluation) => {
                         if frame.saturating_sub(started) >= timeout_frames as u64 {
@@ -450,18 +789,29 @@ fn advance_playtest(
                         return;
                     }
                     Err(error) => {
-                        fail_playtest(world, debugger, session, frame, "WAIT_EVALUATION_FAILED", error);
+                        fail_playtest(
+                            world,
+                            debugger,
+                            session,
+                            frame,
+                            "WAIT_EVALUATION_FAILED",
+                            error,
+                        );
                         return;
                     }
                 }
             }
             DebugPlaytestStep::Assert { condition, message } => {
                 match evaluate_condition(world, &condition, frame) {
-                    Ok(evaluation) if evaluation.matched => complete_step(session, frame, json!({
-                        "type": "assert",
-                        "matched": true,
-                        "actual": evaluation.actual,
-                    })),
+                    Ok(evaluation) if evaluation.matched => complete_step(
+                        session,
+                        frame,
+                        json!({
+                            "type": "assert",
+                            "matched": true,
+                            "actual": evaluation.actual,
+                        }),
+                    ),
                     Ok(evaluation) => {
                         fail_playtest(
                             world,
@@ -469,12 +819,21 @@ fn advance_playtest(
                             session,
                             frame,
                             "ASSERTION_FAILED",
-                            message.unwrap_or_else(|| format!("Assertion did not match; actual={}", evaluation.actual)),
+                            message.unwrap_or_else(|| {
+                                format!("Assertion did not match; actual={}", evaluation.actual)
+                            }),
                         );
                         return;
                     }
                     Err(error) => {
-                        fail_playtest(world, debugger, session, frame, "ASSERTION_EVALUATION_FAILED", error);
+                        fail_playtest(
+                            world,
+                            debugger,
+                            session,
+                            frame,
+                            "ASSERTION_EVALUATION_FAILED",
+                            error,
+                        );
                         return;
                     }
                 }
@@ -484,14 +843,19 @@ fn advance_playtest(
                 let capture = start_debug_capture(
                     world,
                     &capture_id,
-                    name.as_deref().unwrap_or(&format!("{}-step-{}", session.id, session.step_index)),
+                    name.as_deref()
+                        .unwrap_or(&format!("{}-step-{}", session.id, session.step_index)),
                 );
                 debugger.captures.insert(capture_id.clone(), capture);
                 session.captures.push(capture_id.clone());
-                complete_step(session, frame, json!({
-                    "type": "capture",
-                    "capture_id": capture_id,
-                }));
+                complete_step(
+                    session,
+                    frame,
+                    json!({
+                        "type": "capture",
+                        "capture_id": capture_id,
+                    }),
+                );
             }
         }
     }
@@ -579,13 +943,16 @@ fn evaluate_condition(
             let entity_ref = world
                 .get_entity(entity_id)
                 .map_err(|_| format!("Entity {entity} not found"))?;
-            let value = reflected_component_json(world, &entity_ref, component)?
-                .ok_or_else(|| format!("Entity {entity} does not expose reflected component '{component}'"))?;
+            let value =
+                reflected_component_json(world, &entity_ref, component)?.ok_or_else(|| {
+                    format!("Entity {entity} does not expose reflected component '{component}'")
+                })?;
             let actual = if field.is_empty() {
                 &value
             } else {
-                json_path(&value, field)
-                    .ok_or_else(|| format!("Field '{field}' not found in component '{component}'"))?
+                json_path(&value, field).ok_or_else(|| {
+                    format!("Field '{field}' not found in component '{component}'")
+                })?
             };
             Ok(ConditionEvaluation {
                 matched: compare_json(actual, &condition.op, &condition.value)?,
@@ -640,12 +1007,14 @@ fn evaluate_condition(
             Ok(ConditionEvaluation {
                 matched: matching.is_some(),
                 actual: matching
-                    .map(|entry| json!({
-                        "level": entry.level,
-                        "message": entry.message,
-                        "target": entry.target,
-                        "timestamp": entry.timestamp,
-                    }))
+                    .map(|entry| {
+                        json!({
+                            "level": entry.level,
+                            "message": entry.message,
+                            "target": entry.target,
+                            "timestamp": entry.timestamp,
+                        })
+                    })
                     .unwrap_or(Value::Null),
             })
         }
@@ -653,7 +1022,13 @@ fn evaluate_condition(
             entity,
             component,
             resource,
-        } => evaluate_change_condition(world, frame, entity.as_ref(), component.as_deref(), resource.as_deref()),
+        } => evaluate_change_condition(
+            world,
+            frame,
+            entity.as_ref(),
+            component.as_deref(),
+            resource.as_deref(),
+        ),
         DebugCondition::FrameAtLeast { frame: target } => Ok(ConditionEvaluation {
             matched: frame >= *target,
             actual: json!({ "frame": frame, "target": target }),
@@ -675,14 +1050,15 @@ fn evaluate_change_condition(
 
     if let Some(resource) = resource {
         let actual = tracker.resource_changes_since(since, Some(resource));
-        let matched = actual["changes"].as_array().is_some_and(|rows| !rows.is_empty());
+        let matched = actual["changes"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty());
         return Ok(ConditionEvaluation { matched, actual });
     }
 
     let resolved_entity = match entity {
         Some(handle) => Some(
-            resolve_entity(world, handle)
-                .ok_or_else(|| format!("Entity {handle} not found"))?,
+            resolve_entity(world, handle).ok_or_else(|| format!("Entity {handle} not found"))?,
         ),
         None => None,
     };
@@ -698,26 +1074,42 @@ fn evaluate_change_condition(
                 })
             })
         } else {
-            actual["spawned"].as_array().is_some_and(|rows| !rows.is_empty())
-                || actual["despawned"].as_array().is_some_and(|rows| !rows.is_empty())
-                || actual["components"].as_array().is_some_and(|rows| !rows.is_empty())
+            actual["spawned"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+                || actual["despawned"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+                || actual["components"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
         };
         return Ok(ConditionEvaluation { matched, actual });
     }
 
     if let Some(component) = component {
         let actual = tracker.component_changes_since(since, Some(component));
-        let matched = actual["changes"].as_array().is_some_and(|rows| !rows.is_empty());
+        let matched = actual["changes"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty());
         return Ok(ConditionEvaluation { matched, actual });
     }
 
     let actual = tracker.changes_since(since);
     let matched = actual["frames"].as_array().is_some_and(|frames| {
         frames.iter().any(|entry| {
-            entry["spawned"].as_array().is_some_and(|rows| !rows.is_empty())
-                || entry["despawned"].as_array().is_some_and(|rows| !rows.is_empty())
-                || entry["components"].as_array().is_some_and(|rows| !rows.is_empty())
-                || entry["resources"].as_array().is_some_and(|rows| !rows.is_empty())
+            entry["spawned"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+                || entry["despawned"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+                || entry["components"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+                || entry["resources"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
         })
     });
     Ok(ConditionEvaluation { matched, actual })
@@ -742,7 +1134,10 @@ fn query_count(world: &World, query: &AdvancedEntityQuery) -> Result<usize, Stri
         }
         if query.name_contains.as_ref().is_some_and(|needle| {
             entity_ref.get::<Name>().is_none_or(|name| {
-                !name.as_str().to_lowercase().contains(&needle.to_lowercase())
+                !name
+                    .as_str()
+                    .to_lowercase()
+                    .contains(&needle.to_lowercase())
             })
         }) {
             continue;
@@ -765,7 +1160,11 @@ fn query_count(world: &World, query: &AdvancedEntityQuery) -> Result<usize, Stri
             continue;
         }
         count += 1;
-        let limit = if query.limit == 0 { usize::MAX } else { query.limit as usize };
+        let limit = if query.limit == 0 {
+            usize::MAX
+        } else {
+            query.limit as usize
+        };
         if count >= limit {
             break;
         }
@@ -843,7 +1242,8 @@ fn reflected_component_json(
     }) else {
         return Ok(None);
     };
-    let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>() else {
+    let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>()
+    else {
         return Ok(None);
     };
     let Some(reflected) = reflect_component.reflect(*entity_ref) else {
@@ -875,11 +1275,14 @@ fn reflected_resource_json(world: &World, requested: &str) -> Result<Value, Stri
         if info.type_id() == Some(type_id) {
             let reflected = unsafe { reflect_from_ptr.as_reflect(ptr) };
             let serializer = ReflectSerializer::new(reflected, &registry);
-            let serialized = serde_json::to_value(&serializer).map_err(|error| error.to_string())?;
+            let serialized =
+                serde_json::to_value(&serializer).map_err(|error| error.to_string())?;
             return Ok(unwrap_reflect_value(serialized));
         }
     }
-    Err(format!("Resource '{requested}' is not present in the world"))
+    Err(format!(
+        "Resource '{requested}' is not present in the world"
+    ))
 }
 
 fn resolve_component_ids(
@@ -915,6 +1318,96 @@ fn json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
         };
     }
     Some(current)
+}
+
+fn collect_condition_tracking_interests(
+    condition: &DebugCondition,
+    components: &mut Vec<String>,
+    resources: &mut Vec<String>,
+) {
+    match condition {
+        DebugCondition::QueryCount { query, .. } => {
+            components.extend(query.with_components.clone());
+            components.extend(query.without_components.clone());
+            components.extend(query.changed.clone());
+            components.extend(query.parent_has.clone());
+            components.extend(query.child_has.clone());
+            components.extend(query.predicates.keys().filter_map(|path| {
+                path.split_once('.')
+                    .map(|(component, _)| component.to_string())
+            }));
+        }
+        DebugCondition::EntityField { component, .. } => components.push(component.clone()),
+        DebugCondition::ResourceField { resource, .. } => resources.push(resource.clone()),
+        DebugCondition::ChangeOccurred {
+            component,
+            resource,
+            ..
+        } => {
+            if let Some(component) = component {
+                components.push(component.clone());
+            }
+            if let Some(resource) = resource {
+                resources.push(resource.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reconcile_dynamic_tracking_interests(world: &mut World) {
+    let (components, resources) = {
+        let debugger = world.resource::<McpDebugger>();
+        let mut components = Vec::new();
+        let mut resources = Vec::new();
+
+        for watchpoint in debugger
+            .watchpoints
+            .values()
+            .filter(|watchpoint| watchpoint.enabled)
+        {
+            collect_condition_tracking_interests(
+                &watchpoint.spec.condition,
+                &mut components,
+                &mut resources,
+            );
+        }
+
+        for session in debugger
+            .playtests
+            .values()
+            .filter(|session| session.status == PlaytestStatus::Running)
+        {
+            for step in session.plan.steps.iter().skip(session.step_index) {
+                match step {
+                    DebugPlaytestStep::Wait { condition, .. }
+                    | DebugPlaytestStep::Assert { condition, .. } => {
+                        collect_condition_tracking_interests(
+                            condition,
+                            &mut components,
+                            &mut resources,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        (components, resources)
+    };
+
+    world
+        .resource_mut::<WorldChangeTracker>()
+        .set_dynamic_interests(components, resources);
+}
+
+fn register_condition_tracking_interests(world: &mut World, condition: &DebugCondition) {
+    let mut components = Vec::new();
+    let mut resources = Vec::new();
+    collect_condition_tracking_interests(condition, &mut components, &mut resources);
+    world
+        .resource_mut::<WorldChangeTracker>()
+        .add_dynamic_interests(components, resources);
 }
 
 fn compare_json(actual: &Value, op: &str, expected: &Value) -> Result<bool, String> {
@@ -982,12 +1475,14 @@ fn collect_evidence(
             capture
                 .get_entries(None, options.logs_limit as usize)
                 .into_iter()
-                .map(|entry| json!({
-                    "level": entry.level,
-                    "message": entry.message,
-                    "target": entry.target,
-                    "timestamp": entry.timestamp,
-                }))
+                .map(|entry| {
+                    json!({
+                        "level": entry.level,
+                        "message": entry.message,
+                        "target": entry.target,
+                        "timestamp": entry.timestamp,
+                    })
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -998,11 +1493,13 @@ fn collect_evidence(
             capture
                 .get_events(None, options.events_limit as usize)
                 .into_iter()
-                .map(|event| json!({
-                    "event_type": event.event_type,
-                    "data": event.data,
-                    "timestamp": event.timestamp,
-                }))
+                .map(|event| {
+                    json!({
+                        "event_type": event.event_type,
+                        "data": event.data,
+                        "timestamp": event.timestamp,
+                    })
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -1022,10 +1519,12 @@ fn collect_evidence(
             .map(|timings| {
                 let mut rows: Vec<Value> = timings
                     .iter()
-                    .map(|(name, timing)| json!({
-                        "system": name,
-                        "timing": timing.as_json(),
-                    }))
+                    .map(|(name, timing)| {
+                        json!({
+                            "system": name,
+                            "timing": timing.as_json(),
+                        })
+                    })
                     .collect();
                 rows.sort_by(|left, right| {
                     right["timing"]["recent_average_ns"]
@@ -1041,11 +1540,13 @@ fn collect_evidence(
 
     let runtime = world
         .get_resource::<McpRegistry>()
-        .map(|registry| json!({
-            "frame": registry.frame,
-            "paused": registry.paused,
-            "time_scale": registry.time_scale,
-        }))
+        .map(|registry| {
+            json!({
+                "frame": registry.frame,
+                "paused": registry.paused,
+                "time_scale": registry.time_scale,
+            })
+        })
         .unwrap_or(Value::Null);
 
     let screenshot_capture_id = if options.screenshot {
@@ -1075,17 +1576,21 @@ fn start_debug_capture(world: &mut World, capture_id: &str, label: &str) -> Valu
         return json!({ "status": "failed", "error": error.to_string() });
     }
 
-    let filename = format!("{}-{}.png", sanitize_filename(label), sanitize_filename(capture_id));
+    let filename = format!(
+        "{}-{}.png",
+        sanitize_filename(label),
+        sanitize_filename(capture_id)
+    );
     let path = capture_dir.join(filename);
     let response_path = path.clone();
     let id = capture_id.to_owned();
 
-    world
-        .spawn(Screenshot::primary_window())
-        .observe(move |captured: On<ScreenshotCaptured>, mut debugger: ResMut<McpDebugger>| {
+    world.spawn(Screenshot::primary_window()).observe(
+        move |captured: On<ScreenshotCaptured>, mut debugger: ResMut<McpDebugger>| {
             let result = save_capture(&captured.image, &response_path)
                 .map(|(width, height)| {
-                    let absolute = fs::canonicalize(&response_path).unwrap_or_else(|_| response_path.clone());
+                    let absolute =
+                        fs::canonicalize(&response_path).unwrap_or_else(|_| response_path.clone());
                     json!({
                         "status": "complete",
                         "path": response_path.to_string_lossy(),
@@ -1096,7 +1601,8 @@ fn start_debug_capture(world: &mut World, capture_id: &str, label: &str) -> Valu
                 })
                 .unwrap_or_else(|error| json!({ "status": "failed", "error": error }));
             debugger.captures.insert(id.clone(), result);
-        });
+        },
+    );
 
     json!({
         "status": "pending",
@@ -1130,7 +1636,11 @@ fn sanitize_filename(value: &str) -> String {
         })
         .take(80)
         .collect();
-    if value.is_empty() { "capture".to_string() } else { value }
+    if value.is_empty() {
+        "capture".to_string()
+    } else {
+        value
+    }
 }
 
 fn watchpoint_json(watchpoint: &WatchpointRuntime, debugger: &McpDebugger) -> Value {
@@ -1158,10 +1668,12 @@ fn playtest_json(session: &PlaytestRuntime, debugger: &McpDebugger) -> Value {
     let captures: Vec<Value> = session
         .captures
         .iter()
-        .map(|id| json!({
-            "id": id,
-            "capture": debugger.captures.get(id).cloned().unwrap_or(Value::Null),
-        }))
+        .map(|id| {
+            json!({
+                "id": id,
+                "capture": debugger.captures.get(id).cloned().unwrap_or(Value::Null),
+            })
+        })
         .collect();
     json!({
         "id": session.id,
@@ -1255,15 +1767,12 @@ fn parse_keycode(key: &str) -> Option<KeyCode> {
 }
 
 fn push_result(world: &World, request_id: u64, result: McpResult) {
-    world.resource::<McpResultQueue>().push(McpResponse { request_id, result });
+    world
+        .resource::<McpResultQueue>()
+        .push(McpResponse { request_id, result });
 }
 
-fn push_error(
-    world: &World,
-    request_id: u64,
-    code: impl Into<String>,
-    message: impl Into<String>,
-) {
+fn push_error(world: &World, request_id: u64, code: impl Into<String>, message: impl Into<String>) {
     push_result(world, request_id, McpResult::error(code, message));
 }
 

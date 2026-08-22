@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::checkpoint::McpCheckpointRegistry;
+
 pub type ActionResult = Result<Value, String>;
 type ActionHandler = Arc<dyn Fn(&mut World, Value) -> ActionResult + Send + Sync + 'static>;
 type StateGetter = Arc<dyn Fn(&World) -> ActionResult + Send + Sync + 'static>;
@@ -144,11 +146,109 @@ pub struct McpSystemTimings {
 
 impl McpSystemTimings {
     pub fn record(&mut self, system: impl Into<String>, duration: Duration) {
-        self.timings.entry(system.into()).or_default().record(duration);
+        self.timings
+            .entry(system.into())
+            .or_default()
+            .record(duration);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &SystemTimingSummary)> {
         self.timings.iter()
+    }
+}
+
+/// Exact ECS access declared by a game for one named system.
+///
+/// Bevy 0.19 stores initialized schedule access internally but does not expose that
+/// access set through a public getter. Register important systems here when exact
+/// writer/read attribution is desired; the MCP falls back to Bevy's public conflict
+/// graph for unregistered systems.
+#[derive(Debug, Clone, Default)]
+pub struct McpSystemAccessSpec {
+    pub system: String,
+    pub schedule: Option<String>,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub resource_reads: Vec<String>,
+    pub resource_writes: Vec<String>,
+    pub read_all: bool,
+    pub write_all: bool,
+}
+
+impl McpSystemAccessSpec {
+    pub fn new(system: impl Into<String>) -> Self {
+        Self {
+            system: system.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn schedule(mut self, schedule: impl Into<String>) -> Self {
+        self.schedule = Some(schedule.into());
+        self
+    }
+
+    pub fn read<T: Component>(mut self) -> Self {
+        self.reads.push(std::any::type_name::<T>().to_string());
+        self
+    }
+
+    pub fn write<T: Component>(mut self) -> Self {
+        self.writes.push(std::any::type_name::<T>().to_string());
+        self
+    }
+
+    pub fn read_resource<T: Resource>(mut self) -> Self {
+        self.resource_reads
+            .push(std::any::type_name::<T>().to_string());
+        self
+    }
+
+    pub fn write_resource<T: Resource>(mut self) -> Self {
+        self.resource_writes
+            .push(std::any::type_name::<T>().to_string());
+        self
+    }
+
+    pub fn read_all(mut self) -> Self {
+        self.read_all = true;
+        self
+    }
+
+    pub fn write_all(mut self) -> Self {
+        self.write_all = true;
+        self
+    }
+
+    pub fn as_json(&self) -> Value {
+        json!({
+            "system": self.system,
+            "schedule": self.schedule,
+            "reads": self.reads,
+            "writes": self.writes,
+            "resource_reads": self.resource_reads,
+            "resource_writes": self.resource_writes,
+            "read_all": self.read_all,
+            "write_all": self.write_all,
+        })
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct McpSystemAccessRegistry {
+    entries: Vec<McpSystemAccessSpec>,
+}
+
+impl McpSystemAccessRegistry {
+    pub fn register(&mut self, spec: McpSystemAccessSpec) {
+        self.entries.retain(|existing| {
+            existing.system != spec.system || existing.schedule != spec.schedule
+        });
+        self.entries.push(spec);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &McpSystemAccessSpec> {
+        self.entries.iter()
     }
 }
 
@@ -170,7 +270,17 @@ pub trait McpAgentAppExt {
     where
         T: FreelyMutableState + Serialize + DeserializeOwned + Send + Sync + 'static;
 
+    fn register_mcp_system_access(&mut self, spec: McpSystemAccessSpec) -> &mut Self;
+
     fn set_mcp_ui_capture_target(&mut self, target: Handle<Image>) -> &mut Self;
+
+    fn register_mcp_checkpoint_resource<T>(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> &mut Self
+    where
+        T: Resource + Serialize + DeserializeOwned + Send + Sync + 'static;
 }
 
 impl McpAgentAppExt for App {
@@ -207,16 +317,22 @@ impl McpAgentAppExt for App {
     {
         self.world_mut().init_resource::<McpStateRegistry>();
         let getter: StateGetter = Arc::new(|world: &World| {
-            let state = world
-                .get_resource::<State<T>>()
-                .ok_or_else(|| format!("State<{}> resource is not initialized", std::any::type_name::<T>()))?;
+            let state = world.get_resource::<State<T>>().ok_or_else(|| {
+                format!(
+                    "State<{}> resource is not initialized",
+                    std::any::type_name::<T>()
+                )
+            })?;
             serde_json::to_value(state.get()).map_err(|error| error.to_string())
         });
         let setter: StateSetter = Arc::new(|world: &mut World, value: Value| {
             let next: T = serde_json::from_value(value).map_err(|error| error.to_string())?;
-            let mut state = world
-                .get_resource_mut::<NextState<T>>()
-                .ok_or_else(|| format!("NextState<{}> resource is not initialized", std::any::type_name::<T>()))?;
+            let mut state = world.get_resource_mut::<NextState<T>>().ok_or_else(|| {
+                format!(
+                    "NextState<{}> resource is not initialized",
+                    std::any::type_name::<T>()
+                )
+            })?;
             state.set(next);
             Ok(json!({ "queued": true }))
         });
@@ -234,9 +350,34 @@ impl McpAgentAppExt for App {
         self
     }
 
+    fn register_mcp_system_access(&mut self, spec: McpSystemAccessSpec) -> &mut Self {
+        self.world_mut().init_resource::<McpSystemAccessRegistry>();
+        self.world_mut()
+            .resource_mut::<McpSystemAccessRegistry>()
+            .register(spec);
+        self
+    }
+
     fn set_mcp_ui_capture_target(&mut self, target: Handle<Image>) -> &mut Self {
         self.world_mut().init_resource::<McpCaptureTargets>();
-        self.world_mut().resource_mut::<McpCaptureTargets>().ui_target = Some(target);
+        self.world_mut()
+            .resource_mut::<McpCaptureTargets>()
+            .ui_target = Some(target);
+        self
+    }
+
+    fn register_mcp_checkpoint_resource<T>(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> &mut Self
+    where
+        T: Resource + Serialize + DeserializeOwned + Send + Sync + 'static,
+    {
+        self.world_mut().init_resource::<McpCheckpointRegistry>();
+        self.world_mut()
+            .resource_mut::<McpCheckpointRegistry>()
+            .register_resource::<T>(name, description);
         self
     }
 }

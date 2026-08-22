@@ -172,6 +172,28 @@ pub enum DebugRequest {
     PlaytestCancel {
         id: String,
     },
+    CheckpointCreate {
+        name: String,
+    },
+    CheckpointList,
+    CheckpointRestore {
+        id: String,
+    },
+    RecordingStart {
+        name: String,
+    },
+    RecordingStop,
+    RecordingList,
+    ReplayStart {
+        recording_id: String,
+        checkpoint_id: Option<String>,
+    },
+    ReplayStatus {
+        id: String,
+    },
+    ReplayCancel {
+        id: String,
+    },
 }
 
 pub fn encode_debug_request(request: &DebugRequest) -> Result<String, serde_json::Error> {
