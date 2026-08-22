@@ -30,6 +30,8 @@ This narrows a runtime symptom to likely source systems without claiming exact p
 
 `tracking_config` accepts `mode: "full" | "scoped"`, history length, component/resource allowlists, and exclusions. Full mode preserves existing behavior. Scoped mode retains spawn/despawn tracking but only snapshots change ticks for subscribed component/resource types. Debugger watchpoints and playtest conditions automatically add relevant dynamic subscriptions.
 
+Dynamic subscriptions are reconciled against the currently enabled watchpoints and running playtests after each debugger tick. Once a one-shot watchpoint fires, a watchpoint is removed, or a playtest completes/cancels, interests that are no longer required are removed rather than accumulating for the rest of the process. In scoped mode, tracker snapshots are reset only when the effective dynamic-interest set actually changes.
+
 Example:
 
 ```json
@@ -53,6 +55,8 @@ app.register_mcp_checkpoint_resource::<SimulationRng>(
 );
 ```
 
+Checkpoint restore is transactional across the adapters covered by the checkpoint. Before applying a restore, the registry validates that every required adapter still exists and captures rollback values for every covered adapter. If an adapter fails—even after partially mutating its own state—the registry attempts to restore the failing adapter and every already-applied adapter. If rollback itself fails, the returned error identifies those failures and callers must treat the affected registered state as uncertain.
+
 Then an agent can:
 
 1. `checkpoint_create`
@@ -63,4 +67,6 @@ Then an agent can:
 6. `replay_start` with the checkpoint ID
 7. poll `replay_status`
 
-Replay preserves the original frame offsets between recorded actions. Checkpoint coverage is returned by `checkpoint_list` so agents can tell exactly what state is deterministic rather than assuming the whole engine was snapshotted.
+Replay preserves the original frame offsets between recorded actions. `replay_start` preflights the recording ID and concurrent-replay constraint before restoring a checkpoint, so an invalid replay request does not first mutate deterministic checkpoint state. The replay start path validates again when the replay runtime is created.
+
+Checkpoint coverage is returned by `checkpoint_list` so agents can tell exactly what state is deterministic rather than assuming the whole engine was snapshotted. The transactional guarantee applies only to the explicitly registered checkpoint adapters; unregistered Bevy world state remains outside checkpoint coverage.
