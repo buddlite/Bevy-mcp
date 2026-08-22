@@ -1,5 +1,5 @@
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
-use bevy_mcp_server::UnifiedBevyMcpServer;
+use bevy_mcp_server::AgentBevyMcpServer;
 use bevy_mcp_server::tools::BevyMcpState;
 use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::EnvFilter;
@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = BevyMcpState::new(ingress, results);
 
-    let server = UnifiedBevyMcpServer::new(state).serve(stdio()).await?;
+    let server = AgentBevyMcpServer::new(state).serve(stdio()).await?;
 
     server.waiting().await?;
     Ok(())
