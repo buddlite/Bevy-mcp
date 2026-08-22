@@ -11,6 +11,7 @@ use bevy_mcp_core::command::{McpCommand, McpResponse, McpResult};
 
 fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
     match command {
+        McpCommand::Capabilities => true,
         McpCommand::EntitySpawn { .. }
         | McpCommand::EntityDespawn { .. }
         | McpCommand::ComponentInsert { .. }
@@ -924,16 +925,22 @@ fn capabilities(world: &World) -> McpResult {
     let key_input_available = world.contains_resource::<ButtonInput<KeyCode>>();
     let mouse_button_available = world.contains_resource::<ButtonInput<MouseButton>>();
     let gamepad_button_available = world.contains_resource::<ButtonInput<GamepadButton>>();
-    let primary_window_available = world
-        .iter_entities()
-        .any(|entity| entity.contains::<bevy::window::PrimaryWindow>());
-    let camera_target_available = world
-        .iter_entities()
-        .any(|entity| entity.contains::<bevy::camera::RenderTarget>());
-    let ui_capture_available = world
-        .get_resource::<crate::agent_api::McpCaptureTargets>()
-        .and_then(|targets| targets.ui_target())
+    let renderer_available = world
+        .get_resource::<bevy::render::renderer::RenderDevice>()
         .is_some();
+    let primary_window_available = renderer_available
+        && world
+            .iter_entities()
+            .any(|entity| entity.contains::<bevy::window::PrimaryWindow>());
+    let camera_target_available = renderer_available
+        && world
+            .iter_entities()
+            .any(|entity| entity.contains::<bevy::camera::RenderTarget>());
+    let ui_capture_available = renderer_available
+        && world
+            .get_resource::<crate::agent_api::McpCaptureTargets>()
+            .and_then(|targets| targets.ui_target())
+            .is_some();
     let mesh_spawn_available = world.contains_resource::<Assets<Mesh>>()
         && world.contains_resource::<Assets<bevy::pbr::StandardMaterial>>();
     let reflected_types_available = world.contains_resource::<AppTypeRegistry>();
@@ -949,6 +956,7 @@ fn capabilities(world: &World) -> McpResult {
 
     McpResult::success(json!({
         "schema_version": 2,
+        "connected": true,
         "permissions": {
             "level": permission_level,
             "ecs_mutation": can_mutate,

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_mcp_core::command::{McpCommand, McpResult};
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
-use bevy_mcp_host::{BevyMcpPlugin, McpPermissions};
+use bevy_mcp_host::{BevyMcpPlugin, McpPermissions, PermissionLevel};
 use serde_json::Value;
 
 fn success_for(results: &McpResultQueue, request_id: u64) -> Value {
@@ -49,6 +49,31 @@ fn capabilities_are_live_and_permission_aware() {
                 entry["tool"] == "playtest_run" && entry["replacement"] == "playtest_start"
             })
     );
+}
+
+#[test]
+fn capabilities_remain_discoverable_with_no_operational_permissions() {
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions {
+                level: PermissionLevel::None,
+                allow_input: false,
+                allow_runtime_control: false,
+                allow_build: false,
+            }),
+    );
+
+    ingress.push(41, McpCommand::Capabilities);
+    app.update();
+    let capabilities = success_for(&results, 41);
+    assert_eq!(capabilities["connected"], true);
+    assert_eq!(capabilities["permissions"]["level"], "none");
+    assert_eq!(capabilities["ecs"]["inspect"]["allowed"], false);
+    assert_eq!(capabilities["ecs"]["inspect"]["operational"], false);
 }
 
 #[test]

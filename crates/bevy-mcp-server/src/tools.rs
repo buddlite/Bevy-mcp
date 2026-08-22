@@ -506,6 +506,14 @@ impl BevyMcpServer {
         description = "Report the live MCP capability contract from the Bevy host, including implementation, runtime availability, permission allowance, and deprecations."
     )]
     async fn capabilities(&self) -> String {
+        if !self.state.connected.load(Ordering::Relaxed) {
+            return serde_json::json!({
+                "schema_version": 2,
+                "connected": false,
+                "message": "Bevy host is not connected; runtime availability and permissions are unknown"
+            })
+            .to_string();
+        }
         self.state.call(McpCommand::Capabilities).await
     }
 
