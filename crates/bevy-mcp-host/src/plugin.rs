@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::advanced;
 use crate::agent_api::{McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
 use crate::change_tracking::{self, WorldChangeTracker};
+use crate::debugger::{self, McpDebugger};
 use crate::deferred::DeferredMcpCommands;
 use crate::event_capture::EventCapture;
 use crate::log_capture::LogCapture;
@@ -114,10 +115,15 @@ impl Plugin for BevyMcpPlugin {
         app.init_resource::<McpCaptureTargets>();
         app.init_resource::<McpSystemTimings>();
         app.init_resource::<WorldChangeTracker>();
+        app.init_resource::<McpDebugger>();
 
         app.add_systems(
             PreUpdate,
             (
+                debugger::debug_ingress_system
+                    .before(advanced::advanced_ingress_system)
+                    .before(systems::ingress_system)
+                    .in_set(McpSet::Ingress),
                 advanced::advanced_ingress_system
                     .before(systems::ingress_system)
                     .in_set(McpSet::Ingress),
@@ -133,6 +139,9 @@ impl Plugin for BevyMcpPlugin {
             PostUpdate,
             (
                 change_tracking::track_world_changes.in_set(McpSet::Capture),
+                debugger::debug_tick_system
+                    .after(change_tracking::track_world_changes)
+                    .in_set(McpSet::Capture),
                 systems::diagnostics_system.in_set(McpSet::Diagnostics),
             ),
         );
