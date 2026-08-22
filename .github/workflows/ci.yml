@@ -13,9 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          ref: agent/high-impact-mcp-upgrades
       - name: Apply second-pass Bevy 0.19 fixes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/high-impact-mcp-upgrades'
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           python - <<'PY'
