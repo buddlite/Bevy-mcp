@@ -327,7 +327,7 @@ impl AdvancedBevyMcpServer {
     }
 
     #[tool(
-        description = "Inspect the declared ECS read/write access of a system, including resources and unbounded World access."
+        description = "Inspect system causal-access evidence. Returns exact access for MCP-registered systems and Bevy conflict evidence as a public-API fallback."
     )]
     async fn system_access(&self, Parameters(params): Parameters<SystemInspectParams>) -> String {
         self.state
@@ -339,7 +339,7 @@ impl AdvancedBevyMcpServer {
     }
 
     #[tool(
-        description = "Find initialized Bevy systems that can write a component. Useful for runtime-to-code causal debugging."
+        description = "Find exact MCP-registered component writers plus automatic Bevy conflict candidates for runtime-to-code causal debugging."
     )]
     async fn component_writers(
         &self,
@@ -353,7 +353,9 @@ impl AdvancedBevyMcpServer {
             .await
     }
 
-    #[tool(description = "Find initialized Bevy systems that can write a resource.")]
+    #[tool(
+        description = "Find exact MCP-registered resource writers plus automatic Bevy conflict candidates."
+    )]
     async fn resource_writers(&self, Parameters(params): Parameters<WriterSearchParams>) -> String {
         self.state
             .call(AdvancedRequest::ResourceWriters {

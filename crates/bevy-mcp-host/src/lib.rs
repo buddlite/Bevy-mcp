@@ -18,7 +18,7 @@ pub mod systems;
 
 pub use agent_api::{
     ActionResult, McpActionRegistry, McpAgentAppExt, McpCaptureTargets, McpStateRegistry,
-    McpSystemTimings,
+    McpSystemAccessRegistry, McpSystemAccessSpec, McpSystemTimings,
 };
 pub use debugger::McpDebugger;
 pub use permissions::{McpPermissions, PermissionLevel};

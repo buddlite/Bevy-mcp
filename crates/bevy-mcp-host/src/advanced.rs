@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::camera::RenderTarget;
 use bevy::ecs::hierarchy::{ChildOf, Children};
-use bevy::ecs::query::ComponentAccessKind;
-use bevy::ecs::schedule::{Schedule, Schedules, SystemKey};
+use bevy::ecs::schedule::{Schedule, Schedules};
 use bevy::prelude::*;
 use bevy::reflect::serde::ReflectSerializer;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -15,8 +14,11 @@ use bevy_mcp_core::advanced::{
 use bevy_mcp_core::command::{McpCommand, McpResponse, McpResult};
 use serde_json::{Value, json};
 
-use crate::agent_api::{McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
-use crate::change_tracking::WorldChangeTracker;
+use crate::agent_api::{
+    McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemAccessRegistry,
+    McpSystemAccessSpec, McpSystemTimings,
+};
+use crate::change_tracking::{WorldChangeTracker, component_name_matches};
 use crate::checkpoint::{McpRecorder, RecordedAction};
 use crate::entity_handle::{entity_to_uri, resolve_entity};
 use crate::permissions::{McpPermissions, PermissionLevel};
@@ -568,88 +570,112 @@ fn system_access(
     requested_system: &str,
     schedule_filter: Option<&str>,
 ) -> McpResult {
+    let registered = world
+        .get_resource::<McpSystemAccessRegistry>()
+        .map(|registry| {
+            registry
+                .iter()
+                .filter(|entry| registered_system_matches(entry, requested_system, schedule_filter))
+                .map(McpSystemAccessSpec::as_json)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
     let Some(schedules) = world.get_resource::<Schedules>() else {
-        return McpResult::error(
-            "SCHEDULES_NOT_AVAILABLE",
-            "Schedules resource is not available",
-        );
+        if registered.is_empty() {
+            return McpResult::error(
+                "SCHEDULES_NOT_AVAILABLE",
+                "Schedules resource is not available",
+            );
+        }
+        return McpResult::success(json!({
+            "matches": registered,
+            "coverage": "registered_exact",
+            "note": "Exact access is game-registered; Bevy schedule conflict fallback was unavailable.",
+        }));
     };
-    let mut matches = Vec::new();
+
+    let mut runtime_matches = Vec::new();
     for (label, schedule) in schedules.iter() {
         let schedule_name = format!("{label:?}");
-        if schedule_filter.is_some_and(|f| !schedule_name_matches(&schedule_name, f)) {
+        if schedule_filter.is_some_and(|filter| !schedule_name_matches(&schedule_name, filter)) {
             continue;
         }
         let Ok(systems) = schedule.systems() else {
             continue;
         };
-        for (key, system) in systems {
-            if system_name_matches(&system.name().to_string(), requested_system) {
-                matches.push(system_access_row(
-                    world,
-                    schedule,
-                    key,
-                    &schedule_name,
-                    &system.name().to_string(),
-                ));
+        for (_, system) in systems {
+            let system_name = system.name().to_string();
+            if !system_name_matches(&system_name, requested_system) {
+                continue;
             }
+            let exact = world
+                .get_resource::<McpSystemAccessRegistry>()
+                .and_then(|registry| {
+                    registry.iter().find(|entry| {
+                        registered_system_matches(entry, &system_name, Some(&schedule_name))
+                    })
+                })
+                .map(McpSystemAccessSpec::as_json);
+            runtime_matches.push(json!({
+                "system": system_name,
+                "schedule": schedule_name,
+                "exact_access": exact,
+                "conflicts": conflict_rows_for_system(world, schedule, requested_system),
+                "coverage": if exact.is_some() { "registered_exact" } else { "conflict_only" },
+            }));
         }
     }
-    if matches.is_empty() {
+
+    if runtime_matches.is_empty() && registered.is_empty() {
         McpResult::error(
             "SYSTEM_NOT_FOUND",
             format!("System '{requested_system}' not found or schedule is not initialized"),
         )
     } else {
-        McpResult::success(json!({ "matches": matches }))
+        McpResult::success(json!({
+            "matches": runtime_matches,
+            "registered": registered,
+            "note": "Bevy 0.19 does not publicly expose stored per-system access sets. exact_access is present for game-registered systems; conflicts are automatic public-API evidence and do not identify which side performed a write.",
+        }))
     }
 }
 
-fn system_access_row(
+fn registered_system_matches(
+    entry: &McpSystemAccessSpec,
+    requested_system: &str,
+    schedule_filter: Option<&str>,
+) -> bool {
+    system_name_matches(&entry.system, requested_system)
+        && schedule_filter.is_none_or(|filter| {
+            entry
+                .schedule
+                .as_deref()
+                .is_some_and(|schedule| schedule_name_matches(schedule, filter))
+        })
+}
+
+fn conflict_rows_for_system(
     world: &World,
     schedule: &Schedule,
-    key: SystemKey,
-    schedule_name: &str,
-    system_name: &str,
-) -> Value {
-    let Some(system) = schedule.graph().systems.get(key) else {
-        return json!({ "system": system_name, "schedule": schedule_name, "initialized": false });
-    };
-    let access = system.access.combined_access();
-    let mut reads = Vec::new();
-    let mut writes = Vec::new();
-    let mut archetypal = Vec::new();
-    let unbounded = access.try_iter_access().is_err();
-    if let Ok(entries) = access.try_iter_access() {
-        for entry in entries {
-            let (id, target) = match entry {
-                ComponentAccessKind::Shared(id) => (id, &mut reads),
-                ComponentAccessKind::Exclusive(id) => (id, &mut writes),
-                ComponentAccessKind::Archetypal(id) => (id, &mut archetypal),
-            };
-            let name = world
-                .components()
-                .get_info(id)
-                .map(|i| i.name().to_string())
-                .unwrap_or_else(|| format!("component#{}", id.index()));
-            let kind = if world.contains_resource_by_id(id) {
-                "resource"
-            } else {
-                "component"
-            };
-            target.push(json!({ "name": name, "kind": kind, "id": id.index() }));
-        }
-    }
-    json!({
-        "system": system_name,
-        "schedule": schedule_name,
-        "reads": reads,
-        "writes": writes,
-        "archetypal": archetypal,
-        "read_all": access.has_read_all(),
-        "write_all": access.has_write_all(),
-        "unbounded": unbounded,
-    })
+    requested_system: &str,
+) -> Vec<Value> {
+    schedule
+        .graph()
+        .conflicting_systems()
+        .to_string(schedule.graph(), world.components())
+        .filter_map(|(left, right, components)| {
+            let left_matches = system_name_matches(&left, requested_system);
+            let right_matches = system_name_matches(&right, requested_system);
+            if !left_matches && !right_matches {
+                return None;
+            }
+            Some(json!({
+                "other_system": if left_matches { right } else { left },
+                "components": components.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            }))
+        })
+        .collect()
 }
 
 fn writers_for(
@@ -668,44 +694,90 @@ fn writers_for(
             format!("'{requested}' is not registered in this world"),
         );
     };
-    let id = info.id();
     let canonical = info.name().to_string();
-    let is_resource = world.contains_resource_by_id(id);
-    let Some(schedules) = world.get_resource::<Schedules>() else {
-        return McpResult::error(
-            "SCHEDULES_NOT_AVAILABLE",
-            "Schedules resource is not available",
-        );
-    };
-    let mut writers = Vec::new();
-    for (label, schedule) in schedules.iter() {
-        let schedule_name = format!("{label:?}");
-        if schedule_filter.is_some_and(|f| !schedule_name_matches(&schedule_name, f)) {
-            continue;
-        }
-        let Ok(systems) = schedule.systems() else {
-            continue;
-        };
-        for (key, system) in systems {
-            let Some(with_access) = schedule.graph().systems.get(key) else {
+    let is_resource = world.contains_resource_by_id(info.id());
+
+    let exact_writers = world
+        .get_resource::<McpSystemAccessRegistry>()
+        .map(|registry| {
+            registry
+                .iter()
+                .filter(|entry| {
+                    if schedule_filter.is_some_and(|filter| {
+                        entry
+                            .schedule
+                            .as_deref()
+                            .is_none_or(|schedule| !schedule_name_matches(schedule, filter))
+                    }) {
+                        return false;
+                    }
+                    let writes = if is_resource {
+                        &entry.resource_writes
+                    } else {
+                        &entry.writes
+                    };
+                    entry.write_all
+                        || writes
+                            .iter()
+                            .any(|name| component_name_matches(name, &canonical))
+                })
+                .map(|entry| {
+                    json!({
+                        "system": entry.system,
+                        "schedule": entry.schedule,
+                        "confidence": "registered_exact",
+                        "write_all": entry.write_all,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut conflict_candidates = Vec::new();
+    if let Some(schedules) = world.get_resource::<Schedules>() {
+        for (label, schedule) in schedules.iter() {
+            let schedule_name = format!("{label:?}");
+            if schedule_filter.is_some_and(|filter| !schedule_name_matches(&schedule_name, filter))
+            {
                 continue;
-            };
-            let access = with_access.access.combined_access();
-            if access.has_write(id) || access.has_write_all() {
-                writers.push(json!({
-                    "system": system.name().to_string(),
-                    "schedule": schedule_name,
-                    "write_all": access.has_write_all(),
-                }));
+            }
+            for (left, right, components) in schedule
+                .graph()
+                .conflicting_systems()
+                .to_string(schedule.graph(), world.components())
+            {
+                let touches_target = components
+                    .iter()
+                    .map(ToString::to_string)
+                    .any(|name| component_name_matches(&name, &canonical));
+                if !touches_target {
+                    continue;
+                }
+                for system in [left, right] {
+                    if !conflict_candidates.iter().any(|row: &Value| {
+                        row["system"].as_str() == Some(system.as_str())
+                            && row["schedule"].as_str() == Some(schedule_name.as_str())
+                    }) {
+                        conflict_candidates.push(json!({
+                            "system": system,
+                            "schedule": schedule_name,
+                            "confidence": "conflict_candidate",
+                        }));
+                    }
+                }
             }
         }
     }
+
     McpResult::success(json!({
         "requested": requested,
         "canonical": canonical,
         "kind": if is_resource { "resource" } else { requested_kind },
-        "writers": writers,
-        "count": writers.len(),
+        "writers": exact_writers,
+        "conflict_candidates": conflict_candidates,
+        "count": exact_writers.len(),
+        "coverage": "registered_exact_plus_conflict_fallback",
+        "note": "writers contains exact opt-in declarations. conflict_candidates is automatic Bevy conflict evidence: either side may be the writer, and a sole writer with no conflicting system will not appear there.",
     }))
 }
 

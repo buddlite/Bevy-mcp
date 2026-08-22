@@ -4,33 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-s2-public-api-fix:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/debugging-intelligence-s1-s4'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/debugging-intelligence-s1-s4
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Apply supported S2 causal-access implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/fix_s2_public_api.py
-          cargo fmt --all
-          rm scripts/fix_s2_public_api.py
-          git show 4dad25c271612e474e179852d71d1a2f09c0e4d9:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Use supported causal access registry for Bevy 0.19"
-          git push origin HEAD:agent/debugging-intelligence-s1-s4
-
   rust:
     runs-on: ubuntu-latest
     steps:

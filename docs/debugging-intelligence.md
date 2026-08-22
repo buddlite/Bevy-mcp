@@ -10,9 +10,21 @@ The dispatcher identifies responses by request ID, so out-of-order results are d
 
 ## Runtime-to-system causality
 
-Use `system_access` to inspect a system's declared ECS reads/writes and `component_writers` / `resource_writers` to identify candidate systems capable of causing a runtime mutation. Unbounded `&World` / `&mut World` access is reported explicitly.
+Bevy 0.19 keeps the initialized per-system access set private, so the MCP uses a hybrid causal index instead of relying on private fields or unsafe layout assumptions. Register important systems when exact read/write attribution is required:
 
-Writer discovery is based on Bevy's declared system access metadata. It narrows a runtime symptom to systems that *can* perform the write; it does not claim that a particular candidate actually performed a specific write on a specific frame. Exact write provenance would require additional instrumentation.
+```rust
+app.register_mcp_system_access(
+    McpSystemAccessSpec::new("combat::apply_damage")
+        .schedule("Update")
+        .read::<DamageEvent>()
+        .write::<Health>()
+        .write_resource::<CombatStats>(),
+);
+```
+
+`system_access`, `component_writers`, and `resource_writers` return these declarations as `registered_exact`. For systems that are not registered, the MCP also uses Bevy's public schedule conflict graph to return `conflict_candidate` evidence. Conflict candidates are deliberately labelled as incomplete: either side of a conflict may be the writer, and a sole writer with no conflicting system cannot be inferred from that graph.
+
+This narrows a runtime symptom to likely source systems without claiming exact per-frame write provenance. Exact "system X performed this write on frame Y" attribution would require runtime instrumentation around the system execution itself.
 
 ## Scoped change tracking
 
