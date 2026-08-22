@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   integrate-s1-s4:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/agent/debugging-intelligence-s1-s4'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/debugging-intelligence-s1-s4'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply staged S1-S4 source
+        shell: bash
         run: |
+          set -euo pipefail
           python scripts/patch_s1.py
           python scripts/patch_s2a.py
           python scripts/patch_s2b.py
@@ -26,25 +28,21 @@ jobs:
           python scripts/patch_s4_2.py
           python scripts/patch_s4_3.py
           cargo fmt --all
+
+          rm -f \
+            scripts/patch_s1.py \
+            scripts/patch_s2a.py \
+            scripts/patch_s2b.py \
+            scripts/patch_s4_1.py \
+            scripts/patch_s4_2.py \
+            scripts/patch_s4_3.py \
+            .github/workflows/apply-s1-s4.yml \
+            integration-failure.log
+          git show 4dad25c271612e474e179852d71d1a2f09c0e4d9:.github/workflows/ci.yml > .github/workflows/ci.yml
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- \
-            crates/bevy-mcp-core/src/advanced.rs \
-            crates/bevy-mcp-core/src/debug.rs \
-            crates/bevy-mcp-host/src/advanced.rs \
-            crates/bevy-mcp-host/src/agent_api.rs \
-            crates/bevy-mcp-host/src/change_tracking.rs \
-            crates/bevy-mcp-host/src/checkpoint.rs \
-            crates/bevy-mcp-host/src/debugger.rs \
-            crates/bevy-mcp-host/src/lib.rs \
-            crates/bevy-mcp-host/src/plugin.rs \
-            crates/bevy-mcp-host/tests/intelligence.rs \
-            crates/bevy-mcp-server/src/advanced_tools.rs \
-            crates/bevy-mcp-server/src/debug_tools.rs \
-            crates/bevy-mcp-server/src/lib.rs \
-            crates/bevy-mcp-server/src/response_dispatcher.rs \
-            crates/bevy-mcp-server/src/tools.rs \
-            docs/debugging-intelligence.md
+          git add -A
           git commit -m "Add concurrent debugging intelligence and deterministic replay"
           git push origin HEAD:agent/debugging-intelligence-s1-s4
 
