@@ -365,6 +365,14 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
             recording_id,
             checkpoint_id,
         } => {
+            if let Err(error) = world
+                .resource::<McpRecorder>()
+                .validate_replay_start(&recording_id)
+            {
+                push_error(world, request_id, "REPLAY_START_FAILED", error);
+                return;
+            }
+
             if let Some(checkpoint_id) = checkpoint_id.as_ref() {
                 let checkpoint = world
                     .resource::<McpCheckpointStore>()

@@ -177,9 +177,13 @@ fn recordings_preserve_frame_offsets_for_replay() {
     assert_eq!(recording.events[0].offset_frames, 3);
     assert_eq!(recording.events[1].offset_frames, 11);
 
+    assert!(recorder.validate_replay_start("missing-recording").is_err());
+    assert!(recorder.validate_replay_start(&recording.id).is_ok());
+
     let replay_id = recorder
         .start_replay(recording.id.clone(), Some("checkpoint-1".into()), 500)
         .unwrap();
+    assert!(recorder.validate_replay_start(&recording.id).is_err());
     let replay = recorder.replays.get(&replay_id).unwrap();
     assert_eq!(replay.start_frame, 500);
     assert_eq!(replay.next_event, 0);

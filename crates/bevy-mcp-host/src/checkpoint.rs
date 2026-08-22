@@ -282,13 +282,8 @@ impl McpRecorder {
             });
         }
     }
-    pub fn start_replay(
-        &mut self,
-        recording_id: String,
-        checkpoint_id: Option<String>,
-        frame: u64,
-    ) -> Result<String, String> {
-        if !self.recordings.contains_key(&recording_id) {
+    pub fn validate_replay_start(&self, recording_id: &str) -> Result<(), String> {
+        if !self.recordings.contains_key(recording_id) {
             return Err(format!("Recording '{recording_id}' not found"));
         }
         if self
@@ -298,6 +293,16 @@ impl McpRecorder {
         {
             return Err("A replay is already running".into());
         }
+        Ok(())
+    }
+
+    pub fn start_replay(
+        &mut self,
+        recording_id: String,
+        checkpoint_id: Option<String>,
+        frame: u64,
+    ) -> Result<String, String> {
+        self.validate_replay_start(&recording_id)?;
         let id = self.alloc("replay");
         self.replays.insert(
             id.clone(),
