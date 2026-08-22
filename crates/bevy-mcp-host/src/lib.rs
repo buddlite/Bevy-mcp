@@ -2,6 +2,7 @@ pub mod advanced;
 pub mod agent_api;
 pub mod change_tracking;
 pub mod command;
+pub mod debugger;
 pub mod deferred;
 pub mod entity_handle;
 pub mod event_capture;
@@ -15,5 +16,6 @@ pub mod schedule;
 pub mod systems;
 
 pub use agent_api::{ActionResult, McpActionRegistry, McpAgentAppExt, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
+pub use debugger::McpDebugger;
 pub use permissions::{McpPermissions, PermissionLevel};
 pub use plugin::BevyMcpPlugin;
