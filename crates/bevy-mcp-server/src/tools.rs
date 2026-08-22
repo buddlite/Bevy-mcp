@@ -8,6 +8,8 @@ use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use serde::Deserialize;
 
+use crate::response_dispatcher::McpResponseDispatcher;
+
 // ---------------------------------------------------------------------------
 // Shared state between MCP server and Bevy app
 // ---------------------------------------------------------------------------
@@ -21,18 +23,19 @@ pub struct BevyMcpState {
     pub ingress: McpIngressQueue,
     pub results: McpResultQueue,
     pub connected: Arc<std::sync::atomic::AtomicBool>,
-    next_id: Arc<AtomicU64>,
-    pending: Arc<Mutex<HashMap<u64, McpResult>>>,
+    pub(crate) dispatcher: McpResponseDispatcher,
 }
 
 impl BevyMcpState {
     pub fn new(ingress: McpIngressQueue, results: McpResultQueue) -> Self {
+        let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dispatcher =
+            McpResponseDispatcher::new(ingress.clone(), results.clone(), connected.clone());
         Self {
             ingress,
             results,
-            connected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            next_id: Arc::new(AtomicU64::new(1)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            connected,
+            dispatcher,
         }
     }
 
@@ -44,57 +47,11 @@ impl BevyMcpState {
         state
     }
 
-    fn next_request_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
-    }
-
-    /// Push a command and wait for the correlated response.
+    /// Push a command and wait for the correlated response through the shared dispatcher.
     async fn call(&self, command: McpCommand) -> String {
-        if !self.connected.load(Ordering::Relaxed) {
-            return serde_json::json!({
-                "error": "RUNTIME_NOT_RUNNING",
-                "message": "No embedded Bevy application is connected. Start the MCP server in the same process and share its queues with BevyMcpPlugin."
-            })
-            .to_string();
-        }
-
-        let request_id = self.next_request_id();
-        tracing::debug!(request_id, ?command, "pushing command to ingress queue");
-        self.ingress.push(request_id, command);
-
-        // Poll the result queue for our response.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if let Some(result) = self.pending.lock().unwrap().remove(&request_id) {
-                return format_result(result);
-            }
-
-            if tokio::time::Instant::now() >= deadline {
-                tracing::warn!(request_id, "timeout waiting for Bevy response");
-                return serde_json::json!({
-                    "error": "TIMEOUT",
-                    "message": "Bevy app did not respond within 5 seconds"
-                })
-                .to_string();
-            }
-
-            let results = self.results.drain();
-            if !results.is_empty() {
-                tracing::debug!(count = results.len(), "drained results from queue");
-            }
-            for response in results {
-                if response.request_id == request_id {
-                    tracing::debug!(request_id, "found matching response");
-                    return format_result(response.result);
-                }
-                self.pending
-                    .lock()
-                    .unwrap()
-                    .insert(response.request_id, response.result);
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        }
+        self.dispatcher
+            .call(command, std::time::Duration::from_secs(5))
+            .await
     }
 }
 
@@ -757,7 +714,9 @@ impl BevyMcpServer {
         self.state.call(McpCommand::WorldSummary).await
     }
 
-    #[tool(description = "Get a comprehensive snapshot of the entire ECS world: entity count by archetype, all registered component types with field names and entity counts, all registered resources, full entity hierarchy tree, and current runtime state. One call for full project context.")]
+    #[tool(
+        description = "Get a comprehensive snapshot of the entire ECS world: entity count by archetype, all registered component types with field names and entity counts, all registered resources, full entity hierarchy tree, and current runtime state. One call for full project context."
+    )]
     async fn world_context_scan(&self) -> String {
         self.state.call(McpCommand::WorldContextScan).await
     }
@@ -1094,12 +1053,22 @@ impl BevyMcpServer {
 
     // -- Procedural assets --
 
-    #[tool(description = "Spawn an entity with a procedural mesh, PBR material, and transform. Shapes: cube, sphere, plane, cylinder, torus.")]
+    #[tool(
+        description = "Spawn an entity with a procedural mesh, PBR material, and transform. Shapes: cube, sphere, plane, cylinder, torus."
+    )]
     async fn mesh_spawn(&self, Parameters(params): Parameters<MeshSpawnParams>) -> String {
         let shape = params.shape.to_lowercase();
         match shape.as_str() {
             "cube" | "sphere" | "plane" | "cylinder" | "torus" => {}
-            _ => return error("INVALID_SHAPE", format!("Unknown shape '{}'. Valid shapes: cube, sphere, plane, cylinder, torus", params.shape)),
+            _ => {
+                return error(
+                    "INVALID_SHAPE",
+                    format!(
+                        "Unknown shape '{}'. Valid shapes: cube, sphere, plane, cylinder, torus",
+                        params.shape
+                    ),
+                );
+            }
         }
 
         let parent = match params.parent {
@@ -1110,35 +1079,57 @@ impl BevyMcpServer {
             None => None,
         };
 
-        let color_val = params.color.unwrap_or(ColorValue { r: 1.0, g: 1.0, b: 1.0, a: None });
-        let pos_val = params.position.unwrap_or(Vec3Value { x: 0.0, y: 0.0, z: 0.0 });
+        let color_val = params.color.unwrap_or(ColorValue {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: None,
+        });
+        let pos_val = params.position.unwrap_or(Vec3Value {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
 
-        self.state.call(McpCommand::MeshSpawn {
-            shape,
-            size: params.size.unwrap_or(1.0),
-            radius: params.radius.unwrap_or(0.5),
-            color: (color_val.r, color_val.g, color_val.b, color_val.a.unwrap_or(1.0)),
-            metallic: params.metallic.unwrap_or(0.0),
-            roughness: params.roughness.unwrap_or(0.5),
-            position: (pos_val.x, pos_val.y, pos_val.z),
-            parent,
-        }).await
+        self.state
+            .call(McpCommand::MeshSpawn {
+                shape,
+                size: params.size.unwrap_or(1.0),
+                radius: params.radius.unwrap_or(0.5),
+                color: (
+                    color_val.r,
+                    color_val.g,
+                    color_val.b,
+                    color_val.a.unwrap_or(1.0),
+                ),
+                metallic: params.metallic.unwrap_or(0.0),
+                roughness: params.roughness.unwrap_or(0.5),
+                position: (pos_val.x, pos_val.y, pos_val.z),
+                parent,
+            })
+            .await
     }
 
-    #[tool(description = "Save an entity subtree as a JSON template. Serializes Name, Transform, and reflected components.")]
+    #[tool(
+        description = "Save an entity subtree as a JSON template. Serializes Name, Transform, and reflected components."
+    )]
     async fn template_save(&self, Parameters(params): Parameters<TemplateSaveParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
             Err(message) => return error("INVALID_HANDLE", message),
         };
-        self.state.call(McpCommand::TemplateSave {
-            entity,
-            name: params.name,
-            path: params.path,
-        }).await
+        self.state
+            .call(McpCommand::TemplateSave {
+                entity,
+                name: params.name,
+                path: params.path,
+            })
+            .await
     }
 
-    #[tool(description = "Load a JSON template and spawn entities from it. Optionally override parent and position.")]
+    #[tool(
+        description = "Load a JSON template and spawn entities from it. Optionally override parent and position."
+    )]
     async fn template_load(&self, Parameters(params): Parameters<TemplateLoadParams>) -> String {
         let parent = match params.parent {
             Some(ref p) => match parse_entity_handle(p) {
@@ -1148,12 +1139,14 @@ impl BevyMcpServer {
             None => None,
         };
         let position = params.position.map(|p| (p.x, p.y, p.z));
-        self.state.call(McpCommand::TemplateLoad {
-            name: params.name,
-            path: params.path,
-            parent,
-            position,
-        }).await
+        self.state
+            .call(McpCommand::TemplateLoad {
+                name: params.name,
+                path: params.path,
+                parent,
+                position,
+            })
+            .await
     }
 
     #[tool(description = "List cameras in the scene")]

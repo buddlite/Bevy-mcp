@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::checkpoint::McpCheckpointRegistry;
+
 pub type ActionResult = Result<Value, String>;
 type ActionHandler = Arc<dyn Fn(&mut World, Value) -> ActionResult + Send + Sync + 'static>;
 type StateGetter = Arc<dyn Fn(&World) -> ActionResult + Send + Sync + 'static>;
@@ -144,7 +146,10 @@ pub struct McpSystemTimings {
 
 impl McpSystemTimings {
     pub fn record(&mut self, system: impl Into<String>, duration: Duration) {
-        self.timings.entry(system.into()).or_default().record(duration);
+        self.timings
+            .entry(system.into())
+            .or_default()
+            .record(duration);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &SystemTimingSummary)> {
@@ -171,6 +176,14 @@ pub trait McpAgentAppExt {
         T: FreelyMutableState + Serialize + DeserializeOwned + Send + Sync + 'static;
 
     fn set_mcp_ui_capture_target(&mut self, target: Handle<Image>) -> &mut Self;
+
+    fn register_mcp_checkpoint_resource<T>(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> &mut Self
+    where
+        T: Resource + Serialize + DeserializeOwned + Send + Sync + 'static;
 }
 
 impl McpAgentAppExt for App {
@@ -207,16 +220,22 @@ impl McpAgentAppExt for App {
     {
         self.world_mut().init_resource::<McpStateRegistry>();
         let getter: StateGetter = Arc::new(|world: &World| {
-            let state = world
-                .get_resource::<State<T>>()
-                .ok_or_else(|| format!("State<{}> resource is not initialized", std::any::type_name::<T>()))?;
+            let state = world.get_resource::<State<T>>().ok_or_else(|| {
+                format!(
+                    "State<{}> resource is not initialized",
+                    std::any::type_name::<T>()
+                )
+            })?;
             serde_json::to_value(state.get()).map_err(|error| error.to_string())
         });
         let setter: StateSetter = Arc::new(|world: &mut World, value: Value| {
             let next: T = serde_json::from_value(value).map_err(|error| error.to_string())?;
-            let mut state = world
-                .get_resource_mut::<NextState<T>>()
-                .ok_or_else(|| format!("NextState<{}> resource is not initialized", std::any::type_name::<T>()))?;
+            let mut state = world.get_resource_mut::<NextState<T>>().ok_or_else(|| {
+                format!(
+                    "NextState<{}> resource is not initialized",
+                    std::any::type_name::<T>()
+                )
+            })?;
             state.set(next);
             Ok(json!({ "queued": true }))
         });
@@ -236,7 +255,24 @@ impl McpAgentAppExt for App {
 
     fn set_mcp_ui_capture_target(&mut self, target: Handle<Image>) -> &mut Self {
         self.world_mut().init_resource::<McpCaptureTargets>();
-        self.world_mut().resource_mut::<McpCaptureTargets>().ui_target = Some(target);
+        self.world_mut()
+            .resource_mut::<McpCaptureTargets>()
+            .ui_target = Some(target);
+        self
+    }
+
+    fn register_mcp_checkpoint_resource<T>(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> &mut Self
+    where
+        T: Resource + Serialize + DeserializeOwned + Send + Sync + 'static,
+    {
+        self.world_mut().init_resource::<McpCheckpointRegistry>();
+        self.world_mut()
+            .resource_mut::<McpCheckpointRegistry>()
+            .register_resource::<T>(name, description);
         self
     }
 }

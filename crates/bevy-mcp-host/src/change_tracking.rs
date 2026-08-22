@@ -26,6 +26,29 @@ impl ChangeKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackingMode {
+    Full,
+    Scoped,
+}
+
+impl TrackingMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Scoped => "scoped",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "scoped" | "subscribed" => Some(Self::Scoped),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ComponentChangeRecord {
     pub entity: Entity,
@@ -51,10 +74,7 @@ pub struct ResourceChangeRecord {
 
 impl ResourceChangeRecord {
     pub fn as_json(&self) -> Value {
-        json!({
-            "resource": self.resource,
-            "kind": self.kind.as_str(),
-        })
+        json!({ "resource": self.resource, "kind": self.kind.as_str() })
     }
 }
 
@@ -96,6 +116,13 @@ pub struct WorldChangeTracker {
     latest_changed_components: HashSet<(Entity, String)>,
     max_history: usize,
     initialized: bool,
+    mode: TrackingMode,
+    components: HashSet<String>,
+    resources: HashSet<String>,
+    exclude_components: HashSet<String>,
+    exclude_resources: HashSet<String>,
+    dynamic_components: HashSet<String>,
+    dynamic_resources: HashSet<String>,
 }
 
 impl Default for WorldChangeTracker {
@@ -108,22 +135,156 @@ impl Default for WorldChangeTracker {
             latest_changed_components: HashSet::new(),
             max_history: 600,
             initialized: false,
+            mode: TrackingMode::Full,
+            components: HashSet::new(),
+            resources: HashSet::new(),
+            exclude_components: HashSet::new(),
+            exclude_resources: HashSet::new(),
+            dynamic_components: HashSet::new(),
+            dynamic_resources: HashSet::new(),
         }
     }
 }
 
 impl WorldChangeTracker {
+    pub fn configure(
+        &mut self,
+        mode: Option<&str>,
+        history_frames: Option<usize>,
+        components: Option<Vec<String>>,
+        resources: Option<Vec<String>>,
+        exclude_components: Option<Vec<String>>,
+        exclude_resources: Option<Vec<String>>,
+    ) -> Result<Value, String> {
+        if let Some(mode) = mode {
+            let parsed = TrackingMode::parse(mode)
+                .ok_or_else(|| format!("Unknown tracking mode '{mode}'; use full or scoped"))?;
+            if parsed != self.mode {
+                self.mode = parsed;
+                self.reset_snapshots();
+                self.previous_resources.clear();
+            }
+        }
+        if let Some(history) = history_frames {
+            self.max_history = history.clamp(1, 100_000);
+            while self.history.len() > self.max_history {
+                self.history.pop_front();
+            }
+        }
+        if let Some(values) = components {
+            self.components = values.into_iter().collect();
+            self.reset_snapshots();
+        }
+        if let Some(values) = resources {
+            self.resources = values.into_iter().collect();
+            self.previous_resources.clear();
+        }
+        if let Some(values) = exclude_components {
+            self.exclude_components = values.into_iter().collect();
+            self.reset_snapshots();
+        }
+        if let Some(values) = exclude_resources {
+            self.exclude_resources = values.into_iter().collect();
+            self.previous_resources.clear();
+        }
+        Ok(self.status_json())
+    }
+
+    pub fn add_dynamic_interests<I, J>(&mut self, components: I, resources: J)
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = String>,
+    {
+        self.dynamic_components.extend(components);
+        self.dynamic_resources.extend(resources);
+    }
+
+    pub fn clear_dynamic_interests(&mut self) {
+        self.dynamic_components.clear();
+        self.dynamic_resources.clear();
+        if self.mode == TrackingMode::Scoped {
+            self.reset_snapshots();
+            self.previous_resources.clear();
+        }
+    }
+
+    pub fn status_json(&self) -> Value {
+        let mut components: Vec<_> = self.components.iter().cloned().collect();
+        let mut resources: Vec<_> = self.resources.iter().cloned().collect();
+        let mut dynamic_components: Vec<_> = self.dynamic_components.iter().cloned().collect();
+        let mut dynamic_resources: Vec<_> = self.dynamic_resources.iter().cloned().collect();
+        components.sort();
+        resources.sort();
+        dynamic_components.sort();
+        dynamic_resources.sort();
+        json!({
+            "mode": self.mode.as_str(),
+            "history_frames": self.max_history,
+            "history_len": self.history.len(),
+            "components": components,
+            "resources": resources,
+            "dynamic_components": dynamic_components,
+            "dynamic_resources": dynamic_resources,
+            "tracked_entities": self.previous_entities.len(),
+            "tracked_resources": self.previous_resources.len(),
+        })
+    }
+
+    fn reset_snapshots(&mut self) {
+        self.previous_entities.clear();
+        self.initialized = false;
+    }
+
+    fn should_track_component(&self, name: &str) -> bool {
+        if self
+            .exclude_components
+            .iter()
+            .any(|v| component_name_matches(name, v))
+        {
+            return false;
+        }
+        self.mode == TrackingMode::Full
+            || self
+                .components
+                .iter()
+                .any(|v| component_name_matches(name, v))
+            || self
+                .dynamic_components
+                .iter()
+                .any(|v| component_name_matches(name, v))
+    }
+
+    fn should_track_resource(&self, name: &str) -> bool {
+        if self
+            .exclude_resources
+            .iter()
+            .any(|v| component_name_matches(name, v))
+        {
+            return false;
+        }
+        self.mode == TrackingMode::Full
+            || self
+                .resources
+                .iter()
+                .any(|v| component_name_matches(name, v))
+            || self
+                .dynamic_resources
+                .iter()
+                .any(|v| component_name_matches(name, v))
+    }
+
     pub fn changes_since(&self, frame: u64) -> Value {
         let frames: Vec<Value> = self
             .history
             .iter()
-            .filter(|entry| entry.frame > frame)
+            .filter(|e| e.frame > frame)
             .map(frame_changes_json)
             .collect();
         json!({
             "since_frame": frame,
-            "oldest_available_frame": self.history.front().map(|entry| entry.frame),
-            "latest_available_frame": self.history.back().map(|entry| entry.frame),
+            "oldest_available_frame": self.history.front().map(|e| e.frame),
+            "latest_available_frame": self.history.back().map(|e| e.frame),
+            "tracking": self.status_json(),
             "frames": frames,
         })
     }
@@ -135,12 +296,14 @@ impl WorldChangeTracker {
         for entry in self.history.iter().filter(|entry| entry.frame > frame) {
             for current in &entry.spawned {
                 if entity.is_none_or(|wanted| wanted == *current) {
-                    spawned.push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
+                    spawned
+                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
                 }
             }
             for current in &entry.despawned {
                 if entity.is_none_or(|wanted| wanted == *current) {
-                    despawned.push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
+                    despawned
+                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
                 }
             }
             for change in &entry.components {
@@ -154,74 +317,35 @@ impl WorldChangeTracker {
                 }
             }
         }
-        json!({
-            "since_frame": frame,
-            "entity": entity.map(entity_to_uri),
-            "spawned": spawned,
-            "despawned": despawned,
-            "components": components,
-        })
+        json!({ "since_frame": frame, "entity": entity.map(entity_to_uri), "spawned": spawned, "despawned": despawned, "components": components })
     }
 
     pub fn component_changes_since(&self, frame: u64, component: Option<&str>) -> Value {
-        let changes: Vec<Value> = self
-            .history
-            .iter()
-            .filter(|entry| entry.frame > frame)
-            .flat_map(|entry| {
-                entry.components.iter().filter_map(move |change| {
-                    if component.is_none_or(|wanted| component_name_matches(&change.component, wanted)) {
-                        Some(json!({
-                            "frame": entry.frame,
-                            "entity": entity_to_uri(change.entity),
-                            "component": change.component,
-                            "kind": change.kind.as_str(),
-                        }))
-                    } else {
-                        None
-                    }
-                })
+        let changes: Vec<Value> = self.history.iter().filter(|e| e.frame > frame).flat_map(|entry| {
+            entry.components.iter().filter_map(move |change| {
+                if component.is_none_or(|wanted| component_name_matches(&change.component, wanted)) {
+                    Some(json!({ "frame": entry.frame, "entity": entity_to_uri(change.entity), "component": change.component, "kind": change.kind.as_str() }))
+                } else { None }
             })
-            .collect();
-        json!({
-            "since_frame": frame,
-            "component": component,
-            "changes": changes,
-        })
+        }).collect();
+        json!({ "since_frame": frame, "component": component, "changes": changes })
     }
 
     pub fn resource_changes_since(&self, frame: u64, resource: Option<&str>) -> Value {
-        let changes: Vec<Value> = self
-            .history
-            .iter()
-            .filter(|entry| entry.frame > frame)
-            .flat_map(|entry| {
-                entry.resources.iter().filter_map(move |change| {
-                    if resource.is_none_or(|wanted| component_name_matches(&change.resource, wanted)) {
-                        Some(json!({
-                            "frame": entry.frame,
-                            "resource": change.resource,
-                            "kind": change.kind.as_str(),
-                        }))
-                    } else {
-                        None
-                    }
-                })
+        let changes: Vec<Value> = self.history.iter().filter(|e| e.frame > frame).flat_map(|entry| {
+            entry.resources.iter().filter_map(move |change| {
+                if resource.is_none_or(|wanted| component_name_matches(&change.resource, wanted)) {
+                    Some(json!({ "frame": entry.frame, "resource": change.resource, "kind": change.kind.as_str() }))
+                } else { None }
             })
-            .collect();
-        json!({
-            "since_frame": frame,
-            "resource": resource,
-            "changes": changes,
-        })
+        }).collect();
+        json!({ "since_frame": frame, "resource": resource, "changes": changes })
     }
 
     pub fn component_changed_last_frame(&self, entity: Entity, component: &str) -> bool {
         self.latest_changed_components
             .iter()
-            .any(|(changed_entity, changed_component)| {
-                *changed_entity == entity && component_name_matches(changed_component, component)
-            })
+            .any(|(e, c)| *e == entity && component_name_matches(c, component))
     }
 
     pub fn latest_frame(&self) -> Option<u64> {
@@ -230,12 +354,13 @@ impl WorldChangeTracker {
 }
 
 pub fn track_world_changes(world: &mut World) {
-    let mut tracker = world.remove_resource::<WorldChangeTracker>().unwrap_or_default();
+    let mut tracker = world
+        .remove_resource::<WorldChangeTracker>()
+        .unwrap_or_default();
     let frame = world
         .get_resource::<McpRegistry>()
-        .map(|registry| registry.frame)
+        .map(|r| r.frame)
         .unwrap_or_default();
-
     let mut current_entities = HashMap::new();
     let mut changes = FrameChanges {
         frame,
@@ -246,38 +371,42 @@ pub fn track_world_changes(world: &mut World) {
         if entity_ref.contains::<IsResource>() {
             continue;
         }
-
         let entity = entity_ref.id();
         let mut snapshot = EntitySnapshot::default();
         for component_id in entity_ref.archetype().components() {
+            let name = component_name(world, *component_id);
+            if !tracker.should_track_component(&name) {
+                continue;
+            }
             let Some(ticks) = entity_ref.get_change_ticks_by_id(*component_id) else {
                 continue;
             };
-            let tick_snapshot = TickSnapshot {
-                added: ticks.added.get(),
-                changed: ticks.changed.get(),
-            };
-            snapshot.components.insert(*component_id, tick_snapshot);
+            snapshot.components.insert(
+                *component_id,
+                TickSnapshot {
+                    added: ticks.added.get(),
+                    changed: ticks.changed.get(),
+                },
+            );
         }
-
         if tracker.initialized {
             match tracker.previous_entities.get(&entity) {
                 None => changes.spawned.push(entity),
                 Some(previous) => {
                     for (component_id, ticks) in &snapshot.components {
-                        let component_name = component_name(world, *component_id);
+                        let name = component_name(world, *component_id);
                         match previous.components.get(component_id) {
                             None => changes.components.push(ComponentChangeRecord {
                                 entity,
-                                component: component_name,
+                                component: name,
                                 kind: ChangeKind::Added,
                             }),
                             Some(old) if old.changed != ticks.changed => {
                                 changes.components.push(ComponentChangeRecord {
                                     entity,
-                                    component: component_name,
+                                    component: name,
                                     kind: ChangeKind::Changed,
-                                });
+                                })
                             }
                             _ => {}
                         }
@@ -294,7 +423,6 @@ pub fn track_world_changes(world: &mut World) {
                 }
             }
         }
-
         current_entities.insert(entity, snapshot);
     }
 
@@ -310,7 +438,7 @@ pub fn track_world_changes(world: &mut World) {
     let mut current_resource_names = HashMap::new();
     for (info, _) in world.iter_resources() {
         let name = info.name().to_string();
-        if is_internal_mcp_resource(&name) {
+        if is_internal_mcp_resource(&name) || !tracker.should_track_resource(&name) {
             continue;
         }
         let component_id = info.id();
@@ -332,14 +460,13 @@ pub fn track_world_changes(world: &mut World) {
                     changes.resources.push(ResourceChangeRecord {
                         resource: name,
                         kind: ChangeKind::Changed,
-                    });
+                    })
                 }
                 _ => {}
             }
         }
         current_resources.insert(component_id, snapshot);
     }
-
     if tracker.initialized {
         for component_id in tracker.previous_resources.keys() {
             if !current_resources.contains_key(component_id) {
@@ -359,13 +486,12 @@ pub fn track_world_changes(world: &mut World) {
     tracker.latest_changed_components = changes
         .components
         .iter()
-        .filter(|change| matches!(change.kind, ChangeKind::Added | ChangeKind::Changed))
-        .map(|change| (change.entity, change.component.clone()))
+        .filter(|c| matches!(c.kind, ChangeKind::Added | ChangeKind::Changed))
+        .map(|c| (c.entity, c.component.clone()))
         .collect();
     tracker.previous_entities = current_entities;
     tracker.previous_resources = current_resources;
     tracker.resource_names = current_resource_names;
-
     if tracker.initialized {
         tracker.history.push_back(changes);
         while tracker.history.len() > tracker.max_history {
@@ -374,7 +500,6 @@ pub fn track_world_changes(world: &mut World) {
     } else {
         tracker.initialized = true;
     }
-
     world.insert_resource(tracker);
 }
 
@@ -392,7 +517,7 @@ fn component_name(world: &World, component_id: ComponentId) -> String {
     world
         .components()
         .get_info(component_id)
-        .map(|info| info.name().to_string())
+        .map(|i| i.name().to_string())
         .unwrap_or_else(|| format!("component#{}", component_id.index()))
 }
 

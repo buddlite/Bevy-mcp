@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use bevy::camera::RenderTarget;
 use bevy::ecs::hierarchy::{ChildOf, Children};
-use bevy::ecs::schedule::{Schedule, Schedules};
+use bevy::ecs::query::ComponentAccessKind;
+use bevy::ecs::schedule::{Schedule, Schedules, SystemKey};
 use bevy::prelude::*;
 use bevy::reflect::serde::ReflectSerializer;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -16,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::agent_api::{McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
 use crate::change_tracking::WorldChangeTracker;
+use crate::checkpoint::{McpRecorder, RecordedAction};
 use crate::entity_handle::{entity_to_uri, resolve_entity};
 use crate::permissions::{McpPermissions, PermissionLevel};
 use crate::queue::{McpIngressQueue, McpResultQueue};
@@ -55,7 +57,9 @@ pub fn advanced_ingress_system(world: &mut World) {
                     },
                 ),
             },
-            command => world.resource::<McpIngressQueue>().push(request_id, command),
+            command => world
+                .resource::<McpIngressQueue>()
+                .push(request_id, command),
         }
     }
 }
@@ -74,15 +78,22 @@ fn handle_advanced_request(world: &mut World, request_id: u64, request: Advanced
 
     match request {
         AdvancedRequest::Capture { options } => start_capture(world, request_id, options),
-        AdvancedRequest::ChangesSince { frame } => {
-            push_result(world, request_id, tracker_result(world, |tracker| tracker.changes_since(frame)))
-        }
+        AdvancedRequest::ChangesSince { frame } => push_result(
+            world,
+            request_id,
+            tracker_result(world, |tracker| tracker.changes_since(frame)),
+        ),
         AdvancedRequest::EntityChanges { frame, entity } => {
             let resolved = match entity.as_ref() {
                 Some(handle) => match resolve_entity(world, handle) {
                     Some(entity) => Some(entity),
                     None => {
-                        push_error(world, request_id, "ENTITY_NOT_FOUND", format!("Entity {handle} not found"));
+                        push_error(
+                            world,
+                            request_id,
+                            "ENTITY_NOT_FOUND",
+                            format!("Entity {handle} not found"),
+                        );
                         return;
                     }
                 },
@@ -91,7 +102,9 @@ fn handle_advanced_request(world: &mut World, request_id: u64, request: Advanced
             push_result(
                 world,
                 request_id,
-                tracker_result(world, |tracker| tracker.entity_changes_since(frame, resolved)),
+                tracker_result(world, |tracker| {
+                    tracker.entity_changes_since(frame, resolved)
+                }),
             );
         }
         AdvancedRequest::ComponentChanges { frame, component } => push_result(
@@ -104,7 +117,9 @@ fn handle_advanced_request(world: &mut World, request_id: u64, request: Advanced
         AdvancedRequest::ResourceChanges { frame, resource } => push_result(
             world,
             request_id,
-            tracker_result(world, |tracker| tracker.resource_changes_since(frame, resource.as_deref())),
+            tracker_result(world, |tracker| {
+                tracker.resource_changes_since(frame, resource.as_deref())
+            }),
         ),
         AdvancedRequest::ScheduleList => push_result(world, request_id, schedule_list(world)),
         AdvancedRequest::ScheduleInspect { schedule } => {
@@ -118,16 +133,81 @@ fn handle_advanced_request(world: &mut World, request_id: u64, request: Advanced
             request_id,
             system_inspect(world, &system, schedule.as_deref()),
         ),
-        AdvancedRequest::SystemTimings { schedule } => {
-            push_result(world, request_id, system_timings(world, schedule.as_deref()))
+        AdvancedRequest::SystemAccess { system, schedule } => push_result(
+            world,
+            request_id,
+            system_access(world, &system, schedule.as_deref()),
+        ),
+        AdvancedRequest::ComponentWriters {
+            component,
+            schedule,
+        } => push_result(
+            world,
+            request_id,
+            writers_for(world, &component, schedule.as_deref(), "component"),
+        ),
+        AdvancedRequest::ResourceWriters { resource, schedule } => push_result(
+            world,
+            request_id,
+            writers_for(world, &resource, schedule.as_deref(), "resource"),
+        ),
+        AdvancedRequest::TrackingConfig {
+            mode,
+            history_frames,
+            components,
+            resources,
+            exclude_components,
+            exclude_resources,
+        } => {
+            let result = world.resource_mut::<WorldChangeTracker>().configure(
+                mode.as_deref(),
+                history_frames,
+                components,
+                resources,
+                exclude_components,
+                exclude_resources,
+            );
+            push_result(
+                world,
+                request_id,
+                result
+                    .map(McpResult::success)
+                    .unwrap_or_else(|e| McpResult::error("INVALID_TRACKING_CONFIG", e)),
+            );
         }
+        AdvancedRequest::TrackingStatus => {
+            push_result(
+                world,
+                request_id,
+                McpResult::success(world.resource::<WorldChangeTracker>().status_json()),
+            );
+        }
+        AdvancedRequest::SystemTimings { schedule } => push_result(
+            world,
+            request_id,
+            system_timings(world, schedule.as_deref()),
+        ),
         AdvancedRequest::StateGet { state } => {
             push_result(world, request_id, state_get(world, state.as_deref()))
         }
         AdvancedRequest::StateTransition { state, value } => {
+            let recorded_value = value.clone();
             let result = world.resource_scope(|world, registry: Mut<McpStateRegistry>| {
                 registry.set(&state, world, value)
             });
+            if result.is_ok() {
+                let frame = world
+                    .get_resource::<McpRegistry>()
+                    .map(|r| r.frame)
+                    .unwrap_or_default();
+                world.resource_mut::<McpRecorder>().record(
+                    frame,
+                    RecordedAction::StateTransition {
+                        state: state.clone(),
+                        value: recorded_value,
+                    },
+                );
+            }
             push_result(
                 world,
                 request_id,
@@ -143,9 +223,23 @@ fn handle_advanced_request(world: &mut World, request_id: u64, request: Advanced
             push_result(world, request_id, semantic_action_list(world))
         }
         AdvancedRequest::SemanticActionInvoke { action, args } => {
+            let recorded_args = args.clone();
             let result = world.resource_scope(|world, registry: Mut<McpActionRegistry>| {
                 registry.invoke(&action, world, args)
             });
+            if result.is_ok() {
+                let frame = world
+                    .get_resource::<McpRegistry>()
+                    .map(|r| r.frame)
+                    .unwrap_or_default();
+                world.resource_mut::<McpRecorder>().record(
+                    frame,
+                    RecordedAction::SemanticAction {
+                        action: action.clone(),
+                        args: recorded_args,
+                    },
+                );
+            }
             push_result(
                 world,
                 request_id,
@@ -240,12 +334,12 @@ fn start_capture(world: &mut World, request_id: u64, options: CaptureOptions) {
     let ui_only = options.ui_only;
     let camera = options.camera.as_ref().map(ToString::to_string);
 
-    world
-        .spawn(screenshot)
-        .observe(move |captured: On<ScreenshotCaptured>, results: Res<McpResultQueue>| {
+    world.spawn(screenshot).observe(
+        move |captured: On<ScreenshotCaptured>, results: Res<McpResultQueue>| {
             let result = save_capture(&captured.image, &response_path, crop.as_ref())
                 .map(|(width, height, output_width, output_height)| {
-                    let absolute = fs::canonicalize(&response_path).unwrap_or_else(|_| response_path.clone());
+                    let absolute =
+                        fs::canonicalize(&response_path).unwrap_or_else(|_| response_path.clone());
                     McpResult::success(json!({
                         "path": response_path.to_string_lossy(),
                         "absolute_path": absolute.to_string_lossy(),
@@ -260,7 +354,8 @@ fn start_capture(world: &mut World, request_id: u64, options: CaptureOptions) {
                 })
                 .unwrap_or_else(|message| McpResult::error("CAPTURE_FAILED", message));
             results.push(McpResponse { request_id, result });
-        });
+        },
+    );
 }
 
 fn save_capture(
@@ -322,7 +417,10 @@ fn sanitize_filename(value: &str) -> String {
 
 fn schedule_list(world: &World) -> McpResult {
     let Some(schedules) = world.get_resource::<Schedules>() else {
-        return McpResult::error("SCHEDULES_NOT_AVAILABLE", "Schedules resource is not available");
+        return McpResult::error(
+            "SCHEDULES_NOT_AVAILABLE",
+            "Schedules resource is not available",
+        );
     };
     let mut rows: Vec<Value> = schedules
         .iter()
@@ -341,7 +439,10 @@ fn schedule_list(world: &World) -> McpResult {
 
 fn schedule_inspect(world: &World, requested: &str) -> McpResult {
     let Some((label, schedule)) = find_schedule(world, requested) else {
-        return McpResult::error("SCHEDULE_NOT_FOUND", format!("Schedule '{requested}' not found"));
+        return McpResult::error(
+            "SCHEDULE_NOT_FOUND",
+            format!("Schedule '{requested}' not found"),
+        );
     };
     let systems = schedule_system_rows(schedule);
     let conflicts: Vec<Value> = schedule
@@ -368,7 +469,10 @@ fn schedule_inspect(world: &World, requested: &str) -> McpResult {
 
 fn system_list(world: &World, schedule_filter: Option<&str>) -> McpResult {
     let Some(schedules) = world.get_resource::<Schedules>() else {
-        return McpResult::error("SCHEDULES_NOT_AVAILABLE", "Schedules resource is not available");
+        return McpResult::error(
+            "SCHEDULES_NOT_AVAILABLE",
+            "Schedules resource is not available",
+        );
     };
     let mut rows = Vec::new();
     for (label, schedule) in schedules.iter() {
@@ -384,9 +488,16 @@ fn system_list(world: &World, schedule_filter: Option<&str>) -> McpResult {
     McpResult::success(json!({ "systems": rows }))
 }
 
-fn system_inspect(world: &World, requested_system: &str, schedule_filter: Option<&str>) -> McpResult {
+fn system_inspect(
+    world: &World,
+    requested_system: &str,
+    schedule_filter: Option<&str>,
+) -> McpResult {
     let Some(schedules) = world.get_resource::<Schedules>() else {
-        return McpResult::error("SCHEDULES_NOT_AVAILABLE", "Schedules resource is not available");
+        return McpResult::error(
+            "SCHEDULES_NOT_AVAILABLE",
+            "Schedules resource is not available",
+        );
     };
     let mut matches = Vec::new();
     for (label, schedule) in schedules.iter() {
@@ -403,7 +514,10 @@ fn system_inspect(world: &World, requested_system: &str, schedule_filter: Option
         }
     }
     if matches.is_empty() {
-        McpResult::error("SYSTEM_NOT_FOUND", format!("System '{requested_system}' not found"))
+        McpResult::error(
+            "SYSTEM_NOT_FOUND",
+            format!("System '{requested_system}' not found"),
+        )
     } else {
         McpResult::success(json!({ "matches": matches }))
     }
@@ -449,9 +563,158 @@ fn schedule_system_rows(schedule: &Schedule) -> Vec<Value> {
     }
 }
 
+fn system_access(
+    world: &World,
+    requested_system: &str,
+    schedule_filter: Option<&str>,
+) -> McpResult {
+    let Some(schedules) = world.get_resource::<Schedules>() else {
+        return McpResult::error(
+            "SCHEDULES_NOT_AVAILABLE",
+            "Schedules resource is not available",
+        );
+    };
+    let mut matches = Vec::new();
+    for (label, schedule) in schedules.iter() {
+        let schedule_name = format!("{label:?}");
+        if schedule_filter.is_some_and(|f| !schedule_name_matches(&schedule_name, f)) {
+            continue;
+        }
+        let Ok(systems) = schedule.systems() else {
+            continue;
+        };
+        for (key, system) in systems {
+            if system_name_matches(&system.name().to_string(), requested_system) {
+                matches.push(system_access_row(
+                    world,
+                    schedule,
+                    key,
+                    &schedule_name,
+                    &system.name().to_string(),
+                ));
+            }
+        }
+    }
+    if matches.is_empty() {
+        McpResult::error(
+            "SYSTEM_NOT_FOUND",
+            format!("System '{requested_system}' not found or schedule is not initialized"),
+        )
+    } else {
+        McpResult::success(json!({ "matches": matches }))
+    }
+}
+
+fn system_access_row(
+    world: &World,
+    schedule: &Schedule,
+    key: SystemKey,
+    schedule_name: &str,
+    system_name: &str,
+) -> Value {
+    let Some(system) = schedule.graph().systems.get(key) else {
+        return json!({ "system": system_name, "schedule": schedule_name, "initialized": false });
+    };
+    let access = system.access.combined_access();
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut archetypal = Vec::new();
+    let unbounded = access.try_iter_access().is_err();
+    if let Ok(entries) = access.try_iter_access() {
+        for entry in entries {
+            let (id, target) = match entry {
+                ComponentAccessKind::Shared(id) => (id, &mut reads),
+                ComponentAccessKind::Exclusive(id) => (id, &mut writes),
+                ComponentAccessKind::Archetypal(id) => (id, &mut archetypal),
+            };
+            let name = world
+                .components()
+                .get_info(id)
+                .map(|i| i.name().to_string())
+                .unwrap_or_else(|| format!("component#{}", id.index()));
+            let kind = if world.contains_resource_by_id(id) {
+                "resource"
+            } else {
+                "component"
+            };
+            target.push(json!({ "name": name, "kind": kind, "id": id.index() }));
+        }
+    }
+    json!({
+        "system": system_name,
+        "schedule": schedule_name,
+        "reads": reads,
+        "writes": writes,
+        "archetypal": archetypal,
+        "read_all": access.has_read_all(),
+        "write_all": access.has_write_all(),
+        "unbounded": unbounded,
+    })
+}
+
+fn writers_for(
+    world: &World,
+    requested: &str,
+    schedule_filter: Option<&str>,
+    requested_kind: &str,
+) -> McpResult {
+    let Some(info) = world
+        .components()
+        .iter_registered()
+        .find(|info| component_name_matches(&info.name().to_string(), requested))
+    else {
+        return McpResult::error(
+            "TYPE_NOT_REGISTERED",
+            format!("'{requested}' is not registered in this world"),
+        );
+    };
+    let id = info.id();
+    let canonical = info.name().to_string();
+    let is_resource = world.contains_resource_by_id(id);
+    let Some(schedules) = world.get_resource::<Schedules>() else {
+        return McpResult::error(
+            "SCHEDULES_NOT_AVAILABLE",
+            "Schedules resource is not available",
+        );
+    };
+    let mut writers = Vec::new();
+    for (label, schedule) in schedules.iter() {
+        let schedule_name = format!("{label:?}");
+        if schedule_filter.is_some_and(|f| !schedule_name_matches(&schedule_name, f)) {
+            continue;
+        }
+        let Ok(systems) = schedule.systems() else {
+            continue;
+        };
+        for (key, system) in systems {
+            let Some(with_access) = schedule.graph().systems.get(key) else {
+                continue;
+            };
+            let access = with_access.access.combined_access();
+            if access.has_write(id) || access.has_write_all() {
+                writers.push(json!({
+                    "system": system.name().to_string(),
+                    "schedule": schedule_name,
+                    "write_all": access.has_write_all(),
+                }));
+            }
+        }
+    }
+    McpResult::success(json!({
+        "requested": requested,
+        "canonical": canonical,
+        "kind": if is_resource { "resource" } else { requested_kind },
+        "writers": writers,
+        "count": writers.len(),
+    }))
+}
+
 fn system_timings(world: &World, schedule_filter: Option<&str>) -> McpResult {
     let Some(timings) = world.get_resource::<McpSystemTimings>() else {
-        return McpResult::error("SYSTEM_TIMINGS_NOT_AVAILABLE", "McpSystemTimings resource is not available");
+        return McpResult::error(
+            "SYSTEM_TIMINGS_NOT_AVAILABLE",
+            "McpSystemTimings resource is not available",
+        );
     };
     let mut rows = Vec::new();
     for (name, timing) in timings.iter() {
@@ -477,7 +740,10 @@ fn system_timings(world: &World, schedule_filter: Option<&str>) -> McpResult {
 
 fn state_get(world: &World, requested: Option<&str>) -> McpResult {
     let Some(states) = world.get_resource::<McpStateRegistry>() else {
-        return McpResult::error("STATE_REGISTRY_NOT_AVAILABLE", "McpStateRegistry is not available");
+        return McpResult::error(
+            "STATE_REGISTRY_NOT_AVAILABLE",
+            "McpStateRegistry is not available",
+        );
     };
     match requested {
         Some(name) => states
@@ -490,7 +756,10 @@ fn state_get(world: &World, requested: Option<&str>) -> McpResult {
 
 fn semantic_action_list(world: &World) -> McpResult {
     let Some(actions) = world.get_resource::<McpActionRegistry>() else {
-        return McpResult::error("ACTION_REGISTRY_NOT_AVAILABLE", "McpActionRegistry is not available");
+        return McpResult::error(
+            "ACTION_REGISTRY_NOT_AVAILABLE",
+            "McpActionRegistry is not available",
+        );
     };
     let mut rows: Vec<Value> = actions
         .names()
@@ -519,7 +788,11 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
     };
 
     let tracker = world.get_resource::<WorldChangeTracker>();
-    let limit = if query.limit == 0 { 100 } else { query.limit.min(10_000) };
+    let limit = if query.limit == 0 {
+        100
+    } else {
+        query.limit.min(10_000)
+    };
     let mut matches = Vec::new();
 
     for entity_ref in world.iter_entities() {
@@ -532,9 +805,12 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
             continue;
         }
         if query.name_contains.as_ref().is_some_and(|needle| {
-            entity_ref
-                .get::<Name>()
-                .is_none_or(|name| !name.as_str().to_lowercase().contains(&needle.to_lowercase()))
+            entity_ref.get::<Name>().is_none_or(|name| {
+                !name
+                    .as_str()
+                    .to_lowercase()
+                    .contains(&needle.to_lowercase())
+            })
         }) {
             continue;
         }
@@ -545,7 +821,9 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
         }) {
             continue;
         }
-        if !parent_matches(world, &entity_ref, &parent_ids) || !children_match(world, &entity_ref, &child_ids) {
+        if !parent_matches(world, &entity_ref, &parent_ids)
+            || !children_match(world, &entity_ref, &child_ids)
+        {
             continue;
         }
         if !query.predicates.iter().all(|(path, condition)| {
@@ -555,7 +833,10 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
         }
 
         let mut row = serde_json::Map::new();
-        row.insert("entity".into(), Value::String(entity_to_uri(entity_ref.id())));
+        row.insert(
+            "entity".into(),
+            Value::String(entity_to_uri(entity_ref.id())),
+        );
         if let Some(name) = entity_ref.get::<Name>() {
             row.insert("name".into(), Value::String(name.as_str().to_owned()));
         }
@@ -582,7 +863,11 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
     }))
 }
 
-fn parent_matches(world: &World, entity_ref: &EntityRef<'_>, required: &[bevy::ecs::component::ComponentId]) -> bool {
+fn parent_matches(
+    world: &World,
+    entity_ref: &EntityRef<'_>,
+    required: &[bevy::ecs::component::ComponentId],
+) -> bool {
     if required.is_empty() {
         return true;
     }
@@ -595,7 +880,11 @@ fn parent_matches(world: &World, entity_ref: &EntityRef<'_>, required: &[bevy::e
     required.iter().all(|id| parent_ref.contains_id(*id))
 }
 
-fn children_match(world: &World, entity_ref: &EntityRef<'_>, required: &[bevy::ecs::component::ComponentId]) -> bool {
+fn children_match(
+    world: &World,
+    entity_ref: &EntityRef<'_>,
+    required: &[bevy::ecs::component::ComponentId],
+) -> bool {
     if required.is_empty() {
         return true;
     }
@@ -686,7 +975,8 @@ fn reflected_component_json(
     }) else {
         return Ok(None);
     };
-    let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>() else {
+    let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>()
+    else {
         return Ok(None);
     };
     let Some(reflected) = reflect_component.reflect(*entity_ref) else {
@@ -713,7 +1003,10 @@ fn resolve_component_ids(
     names: &[String],
 ) -> Result<Vec<bevy::ecs::component::ComponentId>, McpResult> {
     let Some(app_registry) = world.get_resource::<AppTypeRegistry>() else {
-        return Err(McpResult::error("TYPE_REGISTRY_NOT_AVAILABLE", "AppTypeRegistry is not available"));
+        return Err(McpResult::error(
+            "TYPE_REGISTRY_NOT_AVAILABLE",
+            "AppTypeRegistry is not available",
+        ));
     };
     let registry = app_registry.read();
     names
@@ -726,15 +1019,24 @@ fn resolve_component_ids(
                     path.short_path() == name || path.path() == name
                 })
                 .and_then(|registration| world.components().get_id(registration.type_id()))
-                .ok_or_else(|| McpResult::error("COMPONENT_NOT_FOUND", format!("Component '{name}' is not registered")))
+                .ok_or_else(|| {
+                    McpResult::error(
+                        "COMPONENT_NOT_FOUND",
+                        format!("Component '{name}' is not registered"),
+                    )
+                })
         })
         .collect()
 }
 
-fn find_schedule<'a>(world: &'a World, requested: &str) -> Option<(&'a dyn bevy::ecs::schedule::ScheduleLabel, &'a Schedule)> {
-    world.get_resource::<Schedules>()?.iter().find(|(label, _)| {
-        schedule_name_matches(&format!("{label:?}"), requested)
-    })
+fn find_schedule<'a>(
+    world: &'a World,
+    requested: &str,
+) -> Option<(&'a dyn bevy::ecs::schedule::ScheduleLabel, &'a Schedule)> {
+    world
+        .get_resource::<Schedules>()?
+        .iter()
+        .find(|(label, _)| schedule_name_matches(&format!("{label:?}"), requested))
 }
 
 fn schedule_name_matches(actual: &str, requested: &str) -> bool {
@@ -748,14 +1050,11 @@ fn system_name_matches(actual: &str, requested: &str) -> bool {
 }
 
 fn push_result(world: &World, request_id: u64, result: McpResult) {
-    world.resource::<McpResultQueue>().push(McpResponse { request_id, result });
+    world
+        .resource::<McpResultQueue>()
+        .push(McpResponse { request_id, result });
 }
 
-fn push_error(
-    world: &World,
-    request_id: u64,
-    code: impl Into<String>,
-    message: impl Into<String>,
-) {
+fn push_error(world: &World, request_id: u64, code: impl Into<String>, message: impl Into<String>) {
     push_result(world, request_id, McpResult::error(code, message));
 }

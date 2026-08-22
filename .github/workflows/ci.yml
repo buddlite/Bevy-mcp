@@ -4,58 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  integrate-s1-s4:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/debugging-intelligence-s1-s4'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/debugging-intelligence-s1-s4
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Apply staged S1-S4 source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/patch_s1.py
-          python scripts/patch_s2a.py
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('scripts/patch_s2b.py')
-          text = path.read_text()
-          old = 'Return explicit timing samples recorded through the MCP timing registry.'
-          new = 'Return explicitly instrumented per-system timing statistics.'
-          if old not in text:
-              raise SystemExit('patch_s2b timing description not found')
-          path.write_text(text.replace(old, new, 1))
-          PY
-          python scripts/patch_s2b.py
-          python scripts/patch_s4_1.py
-          python scripts/patch_s4_2.py
-          python scripts/patch_s4_3.py
-          cargo fmt --all
-
-          rm -f \
-            scripts/patch_s1.py \
-            scripts/patch_s2a.py \
-            scripts/patch_s2b.py \
-            scripts/patch_s4_1.py \
-            scripts/patch_s4_2.py \
-            scripts/patch_s4_3.py \
-            .github/workflows/apply-s1-s4.yml \
-            integration-failure.log
-          git show 4dad25c271612e474e179852d71d1a2f09c0e4d9:.github/workflows/ci.yml > .github/workflows/ci.yml
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Add concurrent debugging intelligence and deterministic replay"
-          git push origin HEAD:agent/debugging-intelligence-s1-s4
-
   rust:
     runs-on: ubuntu-latest
     steps:

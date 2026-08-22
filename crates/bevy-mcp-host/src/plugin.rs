@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use crate::advanced;
 use crate::agent_api::{McpActionRegistry, McpCaptureTargets, McpStateRegistry, McpSystemTimings};
 use crate::change_tracking::{self, WorldChangeTracker};
+use crate::checkpoint::{McpCheckpointRegistry, McpCheckpointStore, McpRecorder};
 use crate::debugger::{self, McpDebugger};
 use crate::deferred::DeferredMcpCommands;
 use crate::event_capture::EventCapture;
@@ -115,6 +116,9 @@ impl Plugin for BevyMcpPlugin {
         app.init_resource::<McpCaptureTargets>();
         app.init_resource::<McpSystemTimings>();
         app.init_resource::<WorldChangeTracker>();
+        app.init_resource::<McpCheckpointRegistry>();
+        app.init_resource::<McpCheckpointStore>();
+        app.init_resource::<McpRecorder>();
         app.init_resource::<McpDebugger>();
 
         app.add_systems(

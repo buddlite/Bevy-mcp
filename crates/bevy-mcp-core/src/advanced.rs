@@ -82,6 +82,27 @@ pub enum AdvancedRequest {
         system: String,
         schedule: Option<String>,
     },
+    SystemAccess {
+        system: String,
+        schedule: Option<String>,
+    },
+    ComponentWriters {
+        component: String,
+        schedule: Option<String>,
+    },
+    ResourceWriters {
+        resource: String,
+        schedule: Option<String>,
+    },
+    TrackingConfig {
+        mode: Option<String>,
+        history_frames: Option<usize>,
+        components: Option<Vec<String>>,
+        resources: Option<Vec<String>>,
+        exclude_components: Option<Vec<String>>,
+        exclude_resources: Option<Vec<String>>,
+    },
+    TrackingStatus,
     SystemTimings {
         schedule: Option<String>,
     },
@@ -121,7 +142,10 @@ mod tests {
         let request = AdvancedRequest::ChangesSince { frame: 42 };
         let encoded = encode_advanced_request(&request).unwrap();
         let decoded = decode_advanced_request(&encoded).unwrap().unwrap();
-        assert!(matches!(decoded, AdvancedRequest::ChangesSince { frame: 42 }));
+        assert!(matches!(
+            decoded,
+            AdvancedRequest::ChangesSince { frame: 42 }
+        ));
     }
 
     #[test]

@@ -23,7 +23,9 @@ fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
         | McpCommand::EntityDuplicate { .. }
         | McpCommand::MeshSpawn { .. }
         | McpCommand::TemplateLoad { .. } => permissions.can_mutate(),
-        McpCommand::TemplateSave { .. } => permissions.level != crate::permissions::PermissionLevel::None,
+        McpCommand::TemplateSave { .. } => {
+            permissions.level != crate::permissions::PermissionLevel::None
+        }
         McpCommand::InputKey { .. }
         | McpCommand::InputMouseButton { .. }
         | McpCommand::InputMouseMove { .. }
@@ -401,7 +403,9 @@ pub fn deferred_apply_system(world: &mut World) {
                         if pressed {
                             world.resource_mut::<ButtonInput<KeyCode>>().press(keycode);
                         } else {
-                            world.resource_mut::<ButtonInput<KeyCode>>().release(keycode);
+                            world
+                                .resource_mut::<ButtonInput<KeyCode>>()
+                                .release(keycode);
                         }
                         world.resource::<McpResultQueue>().push(McpResponse {
                             request_id: result_id,
@@ -431,13 +435,19 @@ pub fn deferred_apply_system(world: &mut World) {
                 if let Some(mouse_button) = parse_mouse_button(&button) {
                     if world.get_resource::<ButtonInput<MouseButton>>().is_some() {
                         if pressed {
-                            world.resource_mut::<ButtonInput<MouseButton>>().press(mouse_button);
+                            world
+                                .resource_mut::<ButtonInput<MouseButton>>()
+                                .press(mouse_button);
                         } else {
-                            world.resource_mut::<ButtonInput<MouseButton>>().release(mouse_button);
+                            world
+                                .resource_mut::<ButtonInput<MouseButton>>()
+                                .release(mouse_button);
                         }
                         world.resource::<McpResultQueue>().push(McpResponse {
                             request_id: result_id,
-                            result: McpResult::success(json!({ "button": button, "pressed": pressed })),
+                            result: McpResult::success(
+                                json!({ "button": button, "pressed": pressed }),
+                            ),
                         });
                     } else {
                         world.resource::<McpResultQueue>().push(McpResponse {
@@ -475,13 +485,19 @@ pub fn deferred_apply_system(world: &mut World) {
                 if let Some(gamepad_button) = parse_gamepad_button(&button) {
                     if world.get_resource::<ButtonInput<GamepadButton>>().is_some() {
                         if pressed {
-                            world.resource_mut::<ButtonInput<GamepadButton>>().press(gamepad_button);
+                            world
+                                .resource_mut::<ButtonInput<GamepadButton>>()
+                                .press(gamepad_button);
                         } else {
-                            world.resource_mut::<ButtonInput<GamepadButton>>().release(gamepad_button);
+                            world
+                                .resource_mut::<ButtonInput<GamepadButton>>()
+                                .release(gamepad_button);
                         }
                         world.resource::<McpResultQueue>().push(McpResponse {
                             request_id: result_id,
-                            result: McpResult::success(json!({ "button": button, "pressed": pressed })),
+                            result: McpResult::success(
+                                json!({ "button": button, "pressed": pressed }),
+                            ),
                         });
                     } else {
                         world.resource::<McpResultQueue>().push(McpResponse {
@@ -575,13 +591,8 @@ pub fn deferred_apply_system(world: &mut World) {
                 position,
                 result_id,
             } => {
-                let result = template_load_apply(
-                    world,
-                    &name,
-                    path.as_deref(),
-                    parent.as_ref(),
-                    position,
-                );
+                let result =
+                    template_load_apply(world, &name, path.as_deref(), parent.as_ref(), position);
                 world.resource::<McpResultQueue>().push(McpResponse {
                     request_id: result_id,
                     result,
@@ -817,7 +828,9 @@ fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegist
         McpCommand::Logs { level, limit } => logs(world, level, *limit),
         McpCommand::Diagnostics => diagnostics(world, registry),
         McpCommand::Hierarchy { root, max_depth } => hierarchy(world, root.as_ref(), *max_depth),
-        McpCommand::ObserveEvents { event_type, limit } => observe_events(world, event_type, *limit),
+        McpCommand::ObserveEvents { event_type, limit } => {
+            observe_events(world, event_type, *limit)
+        }
         McpCommand::UiQuery { root, max_depth } => ui_query(world, root.as_ref(), *max_depth),
         McpCommand::ListPlugins => list_plugins(world),
         McpCommand::CaptureGame => capture_game(world),
@@ -1029,14 +1042,15 @@ fn world_context_scan(world: &World, registry: &McpRegistry) -> McpResult {
             .map(|n| n.to_string())
             .unwrap_or_default();
 
-        let children_json: Vec<serde_json::Value> = if let Some(children) = world.get::<Children>(entity) {
-            children
-                .iter()
-                .map(|child| build_context_tree(world, child, depth + 1, max_depth))
-                .collect()
-        } else {
-            vec![]
-        };
+        let children_json: Vec<serde_json::Value> =
+            if let Some(children) = world.get::<Children>(entity) {
+                children
+                    .iter()
+                    .map(|child| build_context_tree(world, child, depth + 1, max_depth))
+                    .collect()
+            } else {
+                vec![]
+            };
 
         json!({
             "entity_id": entity.index().index(),
@@ -1224,7 +1238,8 @@ fn component_get(
         }
     };
 
-    let serializer = bevy::reflect::serde::ReflectSerializer::new(reflected.as_reflect(), &registry);
+    let serializer =
+        bevy::reflect::serde::ReflectSerializer::new(reflected.as_reflect(), &registry);
     match serde_json::to_value(&serializer) {
         Ok(value) => McpResult::success(json!({
             "component": component,
@@ -1327,10 +1342,8 @@ fn component_schema(world: &World, component: &str) -> McpResult {
                             v["fields"] = json!(fields);
                         }
                         bevy::reflect::enums::VariantInfo::Tuple(t) => {
-                            let fields: Vec<Value> = t
-                                .iter()
-                                .map(|f| json!({ "type": f.type_path() }))
-                                .collect();
+                            let fields: Vec<Value> =
+                                t.iter().map(|f| json!({ "type": f.type_path() })).collect();
                             v["kind"] = json!("tuple");
                             v["fields"] = json!(fields);
                         }
@@ -1670,7 +1683,8 @@ fn hierarchy(
             });
         }
 
-        let children: Vec<serde_json::Value> = if let Some(children) = world.get::<Children>(entity) {
+        let children: Vec<serde_json::Value> = if let Some(children) = world.get::<Children>(entity)
+        {
             children
                 .iter()
                 .map(|child| build_tree(world, child, depth + 1, max_depth))
@@ -2114,7 +2128,10 @@ fn camera_frame_entity(
     };
     McpResult::error(
         "NOT_IMPLEMENTED",
-        format!("Camera framing is not implemented (target position: {:?})", transform.translation),
+        format!(
+            "Camera framing is not implemented (target position: {:?})",
+            transform.translation
+        ),
     )
 }
 

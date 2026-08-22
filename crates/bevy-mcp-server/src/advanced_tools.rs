@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use bevy_mcp_core::advanced::{
     AdvancedEntityQuery, AdvancedRequest, CaptureOptions, CaptureRect, QueryCondition,
@@ -19,38 +17,22 @@ use rmcp::{ErrorData, handler::server::wrapper::Parameters, schemars, tool, tool
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::response_dispatcher::McpResponseDispatcher;
 use crate::tools::{BevyMcpServer, BevyMcpState};
 
 #[derive(Clone)]
 struct AdvancedMcpState {
-    ingress: McpIngressQueue,
-    results: McpResultQueue,
-    connected: Arc<std::sync::atomic::AtomicBool>,
-    next_id: Arc<AtomicU64>,
-    pending: Arc<Mutex<HashMap<u64, McpResult>>>,
+    dispatcher: McpResponseDispatcher,
 }
 
 impl AdvancedMcpState {
     fn from_base(state: &BevyMcpState) -> Self {
         Self {
-            ingress: state.ingress.clone(),
-            results: state.results.clone(),
-            connected: state.connected.clone(),
-            next_id: Arc::new(AtomicU64::new(1 << 63)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            dispatcher: state.dispatcher.clone(),
         }
     }
 
     async fn call(&self, request: AdvancedRequest) -> String {
-        if !self.connected.load(Ordering::Relaxed) {
-            return serde_json::json!({
-                "error": "RUNTIME_NOT_RUNNING",
-                "message": "No embedded Bevy application is connected."
-            })
-            .to_string();
-        }
-
-        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let operation_id = match encode_advanced_request(&request) {
             Ok(value) => value,
             Err(error) => {
@@ -61,49 +43,14 @@ impl AdvancedMcpState {
                 .to_string();
             }
         };
-        self.ingress.push(
-            request_id,
-            McpCommand::OperationStatus {
-                operation_id: Some(operation_id),
-            },
-        );
-
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
-        loop {
-            if let Some(result) = self.pending.lock().unwrap().remove(&request_id) {
-                return format_result(result);
-            }
-
-            if tokio::time::Instant::now() >= deadline {
-                return serde_json::json!({
-                    "error": "TIMEOUT",
-                    "message": "Bevy app did not respond within 15 seconds"
-                })
-                .to_string();
-            }
-
-            for response in self.results.drain() {
-                if response.request_id == request_id {
-                    return format_result(response.result);
-                }
-                self.pending
-                    .lock()
-                    .unwrap()
-                    .insert(response.request_id, response.result);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        }
-    }
-}
-
-fn format_result(result: McpResult) -> String {
-    match result {
-        McpResult::Success(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".into()),
-        McpResult::Error { code, message } => serde_json::json!({
-            "error": code,
-            "message": message,
-        })
-        .to_string(),
+        self.dispatcher
+            .call(
+                McpCommand::OperationStatus {
+                    operation_id: Some(operation_id),
+                },
+                std::time::Duration::from_secs(15),
+            )
+            .await
     }
 }
 
@@ -171,8 +118,29 @@ pub struct SystemInspectParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WriterSearchParams {
+    pub name: String,
+    pub schedule: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TrackingConfigParams {
+    #[schemars(
+        description = "Tracking mode: full or scoped. Scoped only snapshots subscribed component/resource ticks."
+    )]
+    pub mode: Option<String>,
+    pub history_frames: Option<usize>,
+    pub components: Option<Vec<String>>,
+    pub resources: Option<Vec<String>>,
+    pub exclude_components: Option<Vec<String>>,
+    pub exclude_resources: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StateGetParams {
-    #[schemars(description = "Registered MCP state name. Omit to list all registered states and values.")]
+    #[schemars(
+        description = "Registered MCP state name. Omit to list all registered states and values."
+    )]
     pub state: Option<String>,
 }
 
@@ -198,11 +166,15 @@ pub struct AdvancedEntityQueryParams {
     pub include: Option<Vec<String>>,
     #[schemars(description = "Field predicates keyed by Component.field.path.")]
     pub predicates: Option<HashMap<String, PredicateParams>>,
-    #[schemars(description = "Components that must have changed in the most recently completed frame.")]
+    #[schemars(
+        description = "Components that must have changed in the most recently completed frame."
+    )]
     pub changed: Option<Vec<String>>,
     #[schemars(description = "Components that the immediate parent must have.")]
     pub parent_has: Option<Vec<String>>,
-    #[schemars(description = "For each component listed, at least one immediate child must have it.")]
+    #[schemars(
+        description = "For each component listed, at least one immediate child must have it."
+    )]
     pub child_has: Option<Vec<String>>,
     pub name_contains: Option<String>,
     pub limit: Option<u32>,
@@ -228,7 +200,9 @@ impl AdvancedBevyMcpServer {
 
 #[tool_router(server_handler)]
 impl AdvancedBevyMcpServer {
-    #[tool(description = "Capture the primary window, a camera render target, a crop, or a registered UI-only render target. Returns a PNG path after capture completes.")]
+    #[tool(
+        description = "Capture the primary window, a camera render target, a crop, or a registered UI-only render target. Returns a PNG path after capture completes."
+    )]
     async fn capture_viewport(
         &self,
         Parameters(params): Parameters<CaptureViewportParams>,
@@ -257,12 +231,20 @@ impl AdvancedBevyMcpServer {
             .await
     }
 
-    #[tool(description = "Return compact spawned/despawned entity, component, and resource deltas newer than a frame.")]
+    #[tool(
+        description = "Return compact spawned/despawned entity, component, and resource deltas newer than a frame."
+    )]
     async fn changes_since(&self, Parameters(params): Parameters<SinceFrameParams>) -> String {
-        self.state.call(AdvancedRequest::ChangesSince { frame: params.frame }).await
+        self.state
+            .call(AdvancedRequest::ChangesSince {
+                frame: params.frame,
+            })
+            .await
     }
 
-    #[tool(description = "Return entity lifecycle and component changes newer than a frame, optionally for one entity.")]
+    #[tool(
+        description = "Return entity lifecycle and component changes newer than a frame, optionally for one entity."
+    )]
     async fn entity_changes(&self, Parameters(params): Parameters<EntityChangesParams>) -> String {
         let entity = match params.entity {
             Some(value) => match EntityHandle::from_uri(&value) {
@@ -272,12 +254,20 @@ impl AdvancedBevyMcpServer {
             None => None,
         };
         self.state
-            .call(AdvancedRequest::EntityChanges { frame: params.frame, entity })
+            .call(AdvancedRequest::EntityChanges {
+                frame: params.frame,
+                entity,
+            })
             .await
     }
 
-    #[tool(description = "Return added, changed, and removed component records newer than a frame.")]
-    async fn component_changes(&self, Parameters(params): Parameters<ComponentChangesParams>) -> String {
+    #[tool(
+        description = "Return added, changed, and removed component records newer than a frame."
+    )]
+    async fn component_changes(
+        &self,
+        Parameters(params): Parameters<ComponentChangesParams>,
+    ) -> String {
         self.state
             .call(AdvancedRequest::ComponentChanges {
                 frame: params.frame,
@@ -287,7 +277,10 @@ impl AdvancedBevyMcpServer {
     }
 
     #[tool(description = "Return added, changed, and removed resource records newer than a frame.")]
-    async fn resource_changes(&self, Parameters(params): Parameters<ResourceChangesParams>) -> String {
+    async fn resource_changes(
+        &self,
+        Parameters(params): Parameters<ResourceChangesParams>,
+    ) -> String {
         self.state
             .call(AdvancedRequest::ResourceChanges {
                 frame: params.frame,
@@ -301,19 +294,29 @@ impl AdvancedBevyMcpServer {
         self.state.call(AdvancedRequest::ScheduleList).await
     }
 
-    #[tool(description = "Inspect a Bevy schedule, including systems, run-condition counts, and access conflicts.")]
+    #[tool(
+        description = "Inspect a Bevy schedule, including systems, run-condition counts, and access conflicts."
+    )]
     async fn schedule_inspect(&self, Parameters(params): Parameters<ScheduleParams>) -> String {
         self.state
-            .call(AdvancedRequest::ScheduleInspect { schedule: params.schedule })
+            .call(AdvancedRequest::ScheduleInspect {
+                schedule: params.schedule,
+            })
             .await
     }
 
     #[tool(description = "List Bevy systems, optionally scoped to a schedule.")]
     async fn system_list(&self, Parameters(params): Parameters<SystemListParams>) -> String {
-        self.state.call(AdvancedRequest::SystemList { schedule: params.schedule }).await
+        self.state
+            .call(AdvancedRequest::SystemList {
+                schedule: params.schedule,
+            })
+            .await
     }
 
-    #[tool(description = "Inspect one Bevy system across schedules, including last-run tick and run-condition count.")]
+    #[tool(
+        description = "Inspect one Bevy system across schedules, including last-run tick and run-condition count."
+    )]
     async fn system_inspect(&self, Parameters(params): Parameters<SystemInspectParams>) -> String {
         self.state
             .call(AdvancedRequest::SystemInspect {
@@ -323,18 +326,96 @@ impl AdvancedBevyMcpServer {
             .await
     }
 
+    #[tool(
+        description = "Inspect the declared ECS read/write access of a system, including resources and unbounded World access."
+    )]
+    async fn system_access(&self, Parameters(params): Parameters<SystemInspectParams>) -> String {
+        self.state
+            .call(AdvancedRequest::SystemAccess {
+                system: params.system,
+                schedule: params.schedule,
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Find initialized Bevy systems that can write a component. Useful for runtime-to-code causal debugging."
+    )]
+    async fn component_writers(
+        &self,
+        Parameters(params): Parameters<WriterSearchParams>,
+    ) -> String {
+        self.state
+            .call(AdvancedRequest::ComponentWriters {
+                component: params.name,
+                schedule: params.schedule,
+            })
+            .await
+    }
+
+    #[tool(description = "Find initialized Bevy systems that can write a resource.")]
+    async fn resource_writers(&self, Parameters(params): Parameters<WriterSearchParams>) -> String {
+        self.state
+            .call(AdvancedRequest::ResourceWriters {
+                resource: params.name,
+                schedule: params.schedule,
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Configure world-change tracking. Use scoped mode to reduce per-frame component/resource tick snapshot cost."
+    )]
+    async fn tracking_config(
+        &self,
+        Parameters(params): Parameters<TrackingConfigParams>,
+    ) -> String {
+        self.state
+            .call(AdvancedRequest::TrackingConfig {
+                mode: params.mode,
+                history_frames: params.history_frames,
+                components: params.components,
+                resources: params.resources,
+                exclude_components: params.exclude_components,
+                exclude_resources: params.exclude_resources,
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Inspect current change-tracking mode, history, explicit scopes, and debugger-derived subscriptions."
+    )]
+    async fn tracking_status(&self) -> String {
+        self.state.call(AdvancedRequest::TrackingStatus).await
+    }
+
     #[tool(description = "Return explicitly instrumented per-system timing statistics.")]
     async fn system_timings(&self, Parameters(params): Parameters<SystemListParams>) -> String {
-        self.state.call(AdvancedRequest::SystemTimings { schedule: params.schedule }).await
+        self.state
+            .call(AdvancedRequest::SystemTimings {
+                schedule: params.schedule,
+            })
+            .await
     }
 
-    #[tool(description = "Read one registered typed Bevy state, or list every MCP-registered state and current value.")]
+    #[tool(
+        description = "Read one registered typed Bevy state, or list every MCP-registered state and current value."
+    )]
     async fn state_get(&self, Parameters(params): Parameters<StateGetParams>) -> String {
-        self.state.call(AdvancedRequest::StateGet { state: params.state }).await
+        self.state
+            .call(AdvancedRequest::StateGet {
+                state: params.state,
+            })
+            .await
     }
 
-    #[tool(description = "Queue a transition for an MCP-registered typed Bevy state. Requires write permission.")]
-    async fn state_transition(&self, Parameters(params): Parameters<StateTransitionParams>) -> String {
+    #[tool(
+        description = "Queue a transition for an MCP-registered typed Bevy state. Requires write permission."
+    )]
+    async fn state_transition(
+        &self,
+        Parameters(params): Parameters<StateTransitionParams>,
+    ) -> String {
         self.state
             .call(AdvancedRequest::StateTransition {
                 state: params.state,
@@ -343,7 +424,9 @@ impl AdvancedBevyMcpServer {
             .await
     }
 
-    #[tool(description = "Agent-oriented ECS query with field predicates, change filters, hierarchy relationships, name matching, and reflected includes.")]
+    #[tool(
+        description = "Agent-oriented ECS query with field predicates, change filters, hierarchy relationships, name matching, and reflected includes."
+    )]
     async fn entity_query_advanced(
         &self,
         Parameters(params): Parameters<AdvancedEntityQueryParams>,
@@ -384,7 +467,9 @@ impl AdvancedBevyMcpServer {
         self.state.call(AdvancedRequest::SemanticActionList).await
     }
 
-    #[tool(description = "Invoke a game-specific semantic action with JSON arguments. Requires write permission.")]
+    #[tool(
+        description = "Invoke a game-specific semantic action with JSON arguments. Requires write permission."
+    )]
     async fn semantic_action_invoke(
         &self,
         Parameters(params): Parameters<SemanticActionInvokeParams>,
@@ -398,13 +483,12 @@ impl AdvancedBevyMcpServer {
     }
 }
 
-/// Combines the legacy tool server and the advanced agent tool server while serializing
-/// queue consumers so correlated responses cannot be drained by the wrong router.
+/// Combines legacy and advanced tools. Responses are correlated by the shared dispatcher,
+/// so independent MCP calls can execute concurrently.
 #[derive(Clone)]
 pub struct UnifiedBevyMcpServer {
     legacy: BevyMcpServer,
     advanced: AdvancedBevyMcpServer,
-    call_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl UnifiedBevyMcpServer {
@@ -413,7 +497,6 @@ impl UnifiedBevyMcpServer {
         Self {
             legacy: BevyMcpServer::new(state),
             advanced,
-            call_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -428,7 +511,6 @@ impl ServerHandler for UnifiedBevyMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let _guard = self.call_gate.lock().await;
         if self.advanced.get_tool(request.name.as_ref()).is_some() {
             self.advanced.call_tool(request, context).await
         } else {
@@ -441,13 +523,18 @@ impl ServerHandler for UnifiedBevyMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut legacy = self.legacy.list_tools(request.clone(), context.clone()).await?;
+        let mut legacy = self
+            .legacy
+            .list_tools(request.clone(), context.clone())
+            .await?;
         let advanced = self.advanced.list_tools(request, context).await?;
         legacy.tools.extend(advanced.tools);
         Ok(legacy)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.advanced.get_tool(name).or_else(|| self.legacy.get_tool(name))
+        self.advanced
+            .get_tool(name)
+            .or_else(|| self.legacy.get_tool(name))
     }
 }
