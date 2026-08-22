@@ -1,0 +1,91 @@
+name: Temporary Bevy 0.19 source fixer
+
+on:
+  push:
+    branches:
+      - agent/high-impact-mcp-upgrades
+    paths:
+      - .github/workflows/fix-bevy19.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/high-impact-mcp-upgrades
+      - name: Apply compiler fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          advanced_path = Path("crates/bevy-mcp-host/src/advanced.rs")
+          advanced = advanced_path.read_text()
+          replacements = [
+              ("use std::collections::HashMap;\n", ""),
+              ("use crate::change_tracking::{WorldChangeTracker, component_name_matches};", "use crate::change_tracking::WorldChangeTracker;"),
+              (".get_entity(*child)", ".get_entity(child)"),
+              ("Value::Object(mut map) if map.len() == 1 => map", "Value::Object(map) if map.len() == 1 => map"),
+          ]
+          for old, new in replacements:
+              if old not in advanced:
+                  raise SystemExit(f"advanced.rs replacement target missing: {old!r}")
+              advanced = advanced.replace(old, new, 1)
+          advanced_path.write_text(advanced)
+
+          systems_path = Path("crates/bevy-mcp-host/src/systems.rs")
+          systems = systems_path.read_text()
+          replacements = [
+              (
+                  ".archetype()\n            .components()\n            .map(|cid| cid.index())",
+                  ".archetype()\n            .components()\n            .iter()\n            .map(|cid| cid.index())",
+              ),
+              (
+                  ".archetype()\n            .components()\n            .filter_map(|cid| {",
+                  ".archetype()\n            .components()\n            .iter()\n            .filter_map(|cid| {",
+              ),
+              (
+                  "    reflect_resource.remove(world);",
+                  "    let Some(component_id) = world.components().get_id(registration.type_id()) else {\n        return McpResult::error(\n            \"RESOURCE_NOT_REGISTERED\",\n            format!(\"Resource '{resource}' has no world component id\"),\n        );\n    };\n    if !world.remove_resource_by_id(component_id) {\n        return McpResult::error(\n            \"RESOURCE_NOT_PRESENT\",\n            format!(\"Resource '{resource}' is not present in the world\"),\n        );\n    }",
+              ),
+              (
+                  "use bevy::pbr::{Mesh3d, MeshMaterial3d, StandardMaterial};",
+                  "use bevy::pbr::{MeshMaterial3d, StandardMaterial};",
+              ),
+              (
+                  "            roughness,\n            ..default()",
+                  "            perceptual_roughness: roughness,\n            ..default()",
+              ),
+          ]
+          for old, new in replacements:
+              if old not in systems:
+                  raise SystemExit(f"systems.rs replacement target missing: {old!r}")
+              systems = systems.replace(old, new, 1)
+          systems_path.write_text(systems)
+          PY
+      - name: Commit fixes to feature branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/bevy-mcp-host/src/advanced.rs crates/bevy-mcp-host/src/systems.rs
+          git commit -m "Fix Bevy 0.19 compile errors"
+          git push origin HEAD:agent/high-impact-mcp-upgrades
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace
