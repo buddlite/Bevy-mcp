@@ -195,17 +195,34 @@ impl WorldChangeTracker {
         I: IntoIterator<Item = String>,
         J: IntoIterator<Item = String>,
     {
-        self.dynamic_components.extend(components);
-        self.dynamic_resources.extend(resources);
+        let mut next_components = self.dynamic_components.clone();
+        let mut next_resources = self.dynamic_resources.clone();
+        next_components.extend(components);
+        next_resources.extend(resources);
+        self.set_dynamic_interests(next_components, next_resources);
     }
 
-    pub fn clear_dynamic_interests(&mut self) {
-        self.dynamic_components.clear();
-        self.dynamic_resources.clear();
+    pub fn set_dynamic_interests<I, J>(&mut self, components: I, resources: J)
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = String>,
+    {
+        let next_components: HashSet<String> = components.into_iter().collect();
+        let next_resources: HashSet<String> = resources.into_iter().collect();
+        if self.dynamic_components == next_components && self.dynamic_resources == next_resources {
+            return;
+        }
+
+        self.dynamic_components = next_components;
+        self.dynamic_resources = next_resources;
         if self.mode == TrackingMode::Scoped {
             self.reset_snapshots();
             self.previous_resources.clear();
         }
+    }
+
+    pub fn clear_dynamic_interests(&mut self) {
+        self.set_dynamic_interests(Vec::<String>::new(), Vec::<String>::new());
     }
 
     pub fn status_json(&self) -> Value {

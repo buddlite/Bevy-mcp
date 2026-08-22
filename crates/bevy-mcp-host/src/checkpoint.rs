@@ -76,12 +76,57 @@ impl McpCheckpointRegistry {
     }
 
     pub fn restore(&self, world: &mut World, values: &Map<String, Value>) -> Result<(), String> {
-        for (name, value) in values {
-            let adapter = self
-                .adapters
+        let mut names: Vec<String> = values.keys().cloned().collect();
+        names.sort();
+
+        for name in &names {
+            if !self.adapters.contains_key(name) {
+                return Err(format!(
+                    "Checkpoint adapter '{name}' is no longer registered"
+                ));
+            }
+        }
+
+        let mut rollback_values = Map::new();
+        for name in &names {
+            let adapter = &self.adapters[name];
+            let value = (adapter.capture)(world).map_err(|error| {
+                format!("Could not capture rollback state for checkpoint adapter '{name}': {error}")
+            })?;
+            rollback_values.insert(name.clone(), value);
+        }
+
+        let mut applied = Vec::new();
+        for name in &names {
+            let adapter = &self.adapters[name];
+            let target = values
                 .get(name)
-                .ok_or_else(|| format!("Checkpoint adapter '{name}' is no longer registered"))?;
-            (adapter.restore)(world, value.clone())?;
+                .expect("checkpoint name was collected from this value map")
+                .clone();
+            if let Err(error) = (adapter.restore)(world, target) {
+                let mut rollback_errors = Vec::new();
+                for rollback_name in std::iter::once(name).chain(applied.iter().rev()) {
+                    let rollback_adapter = &self.adapters[rollback_name];
+                    let rollback_value = rollback_values
+                        .get(rollback_name)
+                        .expect("rollback value captured before mutation")
+                        .clone();
+                    if let Err(rollback_error) = (rollback_adapter.restore)(world, rollback_value) {
+                        rollback_errors.push(format!("{rollback_name}: {rollback_error}"));
+                    }
+                }
+
+                if rollback_errors.is_empty() {
+                    return Err(format!(
+                        "Checkpoint restore failed for adapter '{name}': {error}; all touched adapters were rolled back"
+                    ));
+                }
+                return Err(format!(
+                    "Checkpoint restore failed for adapter '{name}': {error}; rollback also failed for {}",
+                    rollback_errors.join(", ")
+                ));
+            }
+            applied.push(name.clone());
         }
         Ok(())
     }

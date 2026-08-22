@@ -20,7 +20,7 @@ use crate::checkpoint::{
     McpCheckpointRegistry, McpCheckpointStore, McpRecorder, RecordedAction, ReplayStatus,
     StoredCheckpoint,
 };
-use crate::entity_handle::{entity_to_uri, resolve_entity};
+use crate::entity_handle::resolve_entity;
 use crate::event_capture::EventCapture;
 use crate::log_capture::LogCapture;
 use crate::permissions::{McpPermissions, PermissionLevel};
@@ -580,6 +580,7 @@ pub fn debug_tick_system(world: &mut World) {
 
     tick_replays(world, frame);
     world.insert_resource(debugger);
+    reconcile_dynamic_tracking_interests(world);
 }
 
 fn tick_replays(world: &mut World, frame: u64) {
@@ -1311,9 +1312,11 @@ fn json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     Some(current)
 }
 
-fn register_condition_tracking_interests(world: &mut World, condition: &DebugCondition) {
-    let mut components = Vec::new();
-    let mut resources = Vec::new();
+fn collect_condition_tracking_interests(
+    condition: &DebugCondition,
+    components: &mut Vec<String>,
+    resources: &mut Vec<String>,
+) {
     match condition {
         DebugCondition::QueryCount { query, .. } => {
             components.extend(query.with_components.clone());
@@ -1342,6 +1345,58 @@ fn register_condition_tracking_interests(world: &mut World, condition: &DebugCon
         }
         _ => {}
     }
+}
+
+fn reconcile_dynamic_tracking_interests(world: &mut World) {
+    let (components, resources) = {
+        let debugger = world.resource::<McpDebugger>();
+        let mut components = Vec::new();
+        let mut resources = Vec::new();
+
+        for watchpoint in debugger
+            .watchpoints
+            .values()
+            .filter(|watchpoint| watchpoint.enabled)
+        {
+            collect_condition_tracking_interests(
+                &watchpoint.spec.condition,
+                &mut components,
+                &mut resources,
+            );
+        }
+
+        for session in debugger
+            .playtests
+            .values()
+            .filter(|session| session.status == PlaytestStatus::Running)
+        {
+            for step in session.plan.steps.iter().skip(session.step_index) {
+                match step {
+                    DebugPlaytestStep::Wait { condition, .. }
+                    | DebugPlaytestStep::Assert { condition, .. } => {
+                        collect_condition_tracking_interests(
+                            condition,
+                            &mut components,
+                            &mut resources,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        (components, resources)
+    };
+
+    world
+        .resource_mut::<WorldChangeTracker>()
+        .set_dynamic_interests(components, resources);
+}
+
+fn register_condition_tracking_interests(world: &mut World, condition: &DebugCondition) {
+    let mut components = Vec::new();
+    let mut resources = Vec::new();
+    collect_condition_tracking_interests(condition, &mut components, &mut resources);
     world
         .resource_mut::<WorldChangeTracker>()
         .add_dynamic_interests(components, resources);
