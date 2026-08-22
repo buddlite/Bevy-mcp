@@ -4,9 +4,8 @@ use bevy_mcp_core::advanced::{
     AdvancedEntityQuery, AdvancedRequest, CaptureOptions, CaptureRect, QueryCondition,
     encode_advanced_request,
 };
-use bevy_mcp_core::command::{McpCommand, McpResult};
+use bevy_mcp_core::command::McpCommand;
 use bevy_mcp_core::entity_handle::EntityHandle;
-use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerInfo,

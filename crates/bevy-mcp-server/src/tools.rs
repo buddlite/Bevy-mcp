@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use bevy_mcp_core::command::{McpCommand, McpResult};
+use bevy_mcp_core::command::McpCommand;
 use bevy_mcp_core::entity_handle::EntityHandle;
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
@@ -1383,13 +1382,6 @@ fn parse_entity_handle(uri: &str) -> Result<EntityHandle, String> {
 
 fn error(code: &str, message: impl Into<String>) -> String {
     serde_json::json!({ "error": code, "message": message.into() }).to_string()
-}
-
-fn format_result(result: McpResult) -> String {
-    match result {
-        McpResult::Success(value) => value.to_string(),
-        McpResult::Error { code, message } => error(&code, message),
-    }
 }
 
 #[cfg(test)]
