@@ -1,0 +1,48 @@
+name: One-time S3 S4 hardening
+
+on:
+  push:
+    paths:
+      - .github/workflows/hardening-s3-s4.yml
+      - scripts/hardening_s3_s4.py
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/debugging-intelligence-s1-s4
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply hardening patch
+        run: python scripts/hardening_s3_s4.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace
+      - name: Commit validated hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            crates/bevy-mcp-host/src/change_tracking.rs \
+            crates/bevy-mcp-host/src/checkpoint.rs \
+            crates/bevy-mcp-host/src/debugger.rs \
+            crates/bevy-mcp-host/tests/intelligence.rs
+          git rm -- .github/workflows/hardening-s3-s4.yml scripts/hardening_s3_s4.py
+          git commit -m "Harden tracking lifecycle and checkpoint restore"
+          git push origin HEAD:agent/debugging-intelligence-s1-s4
