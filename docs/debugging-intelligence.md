@@ -6,9 +6,13 @@ This layer adds four high-value capabilities for agent-driven Bevy development.
 
 All legacy, advanced, and debugger requests share one `McpResponseDispatcher`. It is the only consumer of the result queue and routes results by request ID to one-shot channels. Independent MCP calls no longer need a global serialization mutex.
 
+The dispatcher identifies responses by request ID, so out-of-order results are delivered to the correct caller. Tool-level timeouts remove abandoned waiters without blocking other in-flight calls.
+
 ## Runtime-to-system causality
 
 Use `system_access` to inspect a system's declared ECS reads/writes and `component_writers` / `resource_writers` to identify candidate systems capable of causing a runtime mutation. Unbounded `&World` / `&mut World` access is reported explicitly.
+
+Writer discovery is based on Bevy's declared system access metadata. It narrows a runtime symptom to systems that *can* perform the write; it does not claim that a particular candidate actually performed a specific write on a specific frame. Exact write provenance would require additional instrumentation.
 
 ## Scoped change tracking
 
