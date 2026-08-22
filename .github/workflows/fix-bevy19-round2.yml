@@ -1,0 +1,82 @@
+name: Temporary Bevy 0.19 second-pass fixer
+
+on:
+  push:
+    branches:
+      - agent/high-impact-mcp-upgrades
+    paths:
+      - .github/workflows/fix-bevy19-round2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/high-impact-mcp-upgrades
+      - name: Apply second-pass compiler fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/bevy-mcp-host/src/systems.rs")
+          text = path.read_text()
+
+          old = '''            .components()
+            .iter()
+            .filter_map(|cid| {
+                world
+                    .components()
+                    .get_info(cid)
+                    .map(|info| info.name().to_string())
+            })'''
+          new = '''            .components()
+            .iter()
+            .filter_map(|cid| {
+                world
+                    .components()
+                    .get_info(*cid)
+                    .map(|info| info.name().to_string())
+            })'''
+          if old not in text:
+              raise SystemExit("world_context_scan ComponentId deref target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''    let reflect_resource = match registration.data::<bevy::ecs::reflect::ReflectResource>() {
+        Some(rr) => rr,
+        None => {
+            return McpResult::error(
+                "RESOURCE_NOT_REFLECTED",
+                format!("Resource '{resource}' does not have ReflectResource data"),
+            );
+        }
+    };
+'''
+          new = '''    if registration
+        .data::<bevy::ecs::reflect::ReflectResource>()
+        .is_none()
+    {
+        return McpResult::error(
+            "RESOURCE_NOT_REFLECTED",
+            format!("Resource '{resource}' does not have ReflectResource data"),
+        );
+    }
+'''
+          if old not in text:
+              raise SystemExit("ReflectResource validation target missing")
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+      - name: Commit fixes to feature branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/bevy-mcp-host/src/systems.rs
+          git commit -m "Finish Bevy 0.19 compile cleanup"
+          git push origin HEAD:agent/high-impact-mcp-upgrades
