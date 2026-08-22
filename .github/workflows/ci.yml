@@ -4,53 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  integrate-surface-cleanup:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/mcp-surface-cleanup'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/mcp-surface-cleanup
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Bevy Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev \
-            libudev-dev \
-            libwayland-dev \
-            libxkbcommon-dev
-      - name: Apply surface cleanup
-        run: python scripts/apply_surface_cleanup.py
-      - name: Format
-        run: cargo fmt --all
-      - name: Check workspace
-        run: cargo check --workspace --all-targets
-      - name: Test workspace
-        run: cargo test --workspace
-      - name: Commit validated source and remove bootstrap files
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- \
-            crates/bevy-mcp-core/src/command.rs \
-            crates/bevy-mcp-host/src/advanced.rs \
-            crates/bevy-mcp-host/src/systems.rs \
-            crates/bevy-mcp-host/tests/intelligence.rs \
-            crates/bevy-mcp-host/tests/surface_contract.rs \
-            crates/bevy-mcp-server/src/tools.rs \
-            docs/tool-capabilities.md
-          git checkout 8fcc331969b492da6a576943730f778b244a17c8 -- .github/workflows/ci.yml
-          git rm -- .github/workflows/surface-cleanup.yml scripts/apply_surface_cleanup.py
-          git add -- .github/workflows/ci.yml
-          git commit -m "Make MCP tool capabilities truthful"
-          git push origin HEAD:agent/mcp-surface-cleanup
-
   rust:
     runs-on: ubuntu-latest
     steps:

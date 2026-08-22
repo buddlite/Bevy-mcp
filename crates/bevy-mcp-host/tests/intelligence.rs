@@ -1,8 +1,11 @@
 use bevy::prelude::*;
+use bevy_mcp_core::advanced::{AdvancedRequest, encode_advanced_request};
+use bevy_mcp_core::command::{McpCommand, McpResult};
+use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use bevy_mcp_host::change_tracking::WorldChangeTracker;
 use bevy_mcp_host::{
-    McpAgentAppExt, McpCheckpointRegistry, McpCheckpointStore, McpRecorder,
-    McpSystemAccessRegistry, McpSystemAccessSpec, RecordedAction,
+    BevyMcpPlugin, McpAgentAppExt, McpCheckpointRegistry, McpCheckpointStore, McpPermissions,
+    McpRecorder, McpSystemAccessRegistry, McpSystemAccessSpec, RecordedAction,
 };
 use serde::{Deserialize, Serialize};
 
@@ -188,4 +191,57 @@ fn recordings_preserve_frame_offsets_for_replay() {
     assert_eq!(replay.start_frame, 500);
     assert_eq!(replay.next_event, 0);
     assert_eq!(replay.checkpoint_id.as_deref(), Some("checkpoint-1"));
+}
+
+#[derive(Resource)]
+struct DormantStats;
+
+#[test]
+fn resource_writers_remain_resource_typed_when_instance_is_absent() {
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions::read_only()),
+    );
+    app.insert_resource(DormantStats);
+    app.register_mcp_system_access(
+        McpSystemAccessSpec::new("economy::write_dormant_stats")
+            .schedule("Update")
+            .write_resource::<DormantStats>(),
+    );
+    app.world_mut().remove_resource::<DormantStats>();
+
+    let operation_id = encode_advanced_request(&AdvancedRequest::ResourceWriters {
+        resource: "DormantStats".into(),
+        schedule: None,
+    })
+    .unwrap();
+    ingress.push(
+        77,
+        McpCommand::OperationStatus {
+            operation_id: Some(operation_id),
+        },
+    );
+    app.update();
+
+    let response = results
+        .drain()
+        .into_iter()
+        .find(|response| response.request_id == 77)
+        .expect("resource writer response");
+    let value = match response.result {
+        McpResult::Success(value) => value,
+        McpResult::Error { code, message } => panic!("unexpected {code}: {message}"),
+    };
+    assert_eq!(value["kind"], "resource");
+    assert!(
+        value["writers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|writer| { writer["system"].as_str() == Some("economy::write_dormant_stats") })
+    );
 }

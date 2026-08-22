@@ -9,6 +9,7 @@ use crate::entity_handle::EntityHandle;
 pub enum McpCommand {
     // -- ECS inspection --
     WorldSummary,
+    Capabilities,
     // -- World context --
     WorldContextScan,
     EntityQuery {

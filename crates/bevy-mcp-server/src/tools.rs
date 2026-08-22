@@ -502,21 +502,11 @@ impl BevyMcpServer {
         self.state.call(McpCommand::Diagnostics).await
     }
 
-    #[tool(description = "List capabilities this server instance provides")]
-    fn capabilities(&self) -> String {
-        serde_json::json!({
-            "ecs": { "inspect": true, "mutate": true, "query": true, "hierarchy": true, "reflection": true },
-            "runtime": { "control": true, "step": true, "time_scale": true, "pause": true },
-            "input": { "raw": true, "actions": false },
-            "capture": { "game": false, "camera": false },
-            "assets": { "inspect": false, "reload": false },
-            "diagnostics": { "render": false, "performance": true, "logs": true, "observe_events": true },
-            "ui": { "query": true, "inspect": true, "click": true, "type_text": true },
-            "procedural": { "mesh_spawn": true, "template_save": true, "template_load": true },
-            "plugins": { "list": true },
-            "build": { "cargo": false, "check": false, "test": false }
-        })
-        .to_string()
+    #[tool(
+        description = "Report the live MCP capability contract from the Bevy host, including implementation, runtime availability, permission allowance, and deprecations."
+    )]
+    async fn capabilities(&self) -> String {
+        self.state.call(McpCommand::Capabilities).await
     }
 
     #[tool(description = "List connected Bevy application instances")]
@@ -607,7 +597,9 @@ impl BevyMcpServer {
         self.state.call(McpCommand::UiInspect { entity }).await
     }
 
-    #[tool(description = "Click a UI element (button, link, etc.)")]
+    #[tool(
+        description = "Reserved for the Agent Interaction subsystem; UI click injection is not implemented yet."
+    )]
     async fn ui_click(&self, Parameters(params): Parameters<UiClickParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
@@ -616,7 +608,9 @@ impl BevyMcpServer {
         self.state.call(McpCommand::UiClick { entity }).await
     }
 
-    #[tool(description = "Type text into a UI text input field")]
+    #[tool(
+        description = "Reserved for the Agent Interaction subsystem; UI text injection is not implemented yet."
+    )]
     async fn ui_type(&self, Parameters(params): Parameters<UiTypeParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
@@ -632,28 +626,14 @@ impl BevyMcpServer {
 
     // -- Playtest --
 
-    #[tool(description = "Run a sequence of playtest steps (restart, input, assert, capture)")]
-    async fn playtest_run(&self, Parameters(params): Parameters<PlaytestRunParams>) -> String {
-        let steps: Vec<bevy_mcp_core::command::PlaytestStep> = params
-            .steps
-            .into_iter()
-            .map(|s| match s.action.as_str() {
-                "runtime_restart" => bevy_mcp_core::command::PlaytestStep::RuntimeRestart,
-                "runtime_step" => bevy_mcp_core::command::PlaytestStep::RuntimeStep {
-                    frames: s.frames.unwrap_or(1),
-                },
-                "input_action" => bevy_mcp_core::command::PlaytestStep::InputAction {
-                    action: s.action_name.unwrap_or_default(),
-                    duration_secs: s.duration.unwrap_or(1.0),
-                },
-                "capture_game" => bevy_mcp_core::command::PlaytestStep::CaptureGame {
-                    name: s.name.unwrap_or_else(|| "unnamed".to_string()),
-                },
-                _ => bevy_mcp_core::command::PlaytestStep::RuntimeStep { frames: 1 },
-            })
-            .collect();
-
-        self.state.call(McpCommand::PlaytestRun { steps }).await
+    #[tool(
+        description = "DEPRECATED and unavailable. Use playtest_start/playtest_status for the frame-driven debugger playtest engine."
+    )]
+    async fn playtest_run(&self, Parameters(_params): Parameters<PlaytestRunParams>) -> String {
+        error(
+            "DEPRECATED_TOOL",
+            "playtest_run never had an executable host implementation; use playtest_start and playtest_status",
+        )
     }
 
     #[tool(description = "Assert a condition about the game state")]
@@ -904,7 +884,9 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Duplicate an entity and all its components")]
+    #[tool(
+        description = "Reserved: entity duplication is not implemented until safe reflected component cloning is available."
+    )]
     async fn entity_duplicate(
         &self,
         Parameters(params): Parameters<EntityDuplicateParams>,
@@ -920,17 +902,23 @@ impl BevyMcpServer {
 
     // -- Runtime control --
 
-    #[tool(description = "Launch/run the Bevy application")]
+    #[tool(
+        description = "Unavailable in embedded mode: application launch is owned by the embedding process."
+    )]
     async fn runtime_launch(&self) -> String {
         self.state.call(McpCommand::RuntimeLaunch).await
     }
 
-    #[tool(description = "Stop the running Bevy application")]
+    #[tool(
+        description = "Unavailable in embedded mode: application stop is owned by the embedding process."
+    )]
     async fn runtime_stop(&self) -> String {
         self.state.call(McpCommand::RuntimeStop).await
     }
 
-    #[tool(description = "Restart the Bevy application (stop + launch)")]
+    #[tool(
+        description = "Unavailable in embedded mode: application restart is owned by the embedding process."
+    )]
     async fn runtime_restart(&self) -> String {
         self.state.call(McpCommand::RuntimeRestart).await
     }
@@ -975,7 +963,9 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Inject a mouse event (motion or button)")]
+    #[tool(
+        description = "Inject a mouse button event. The motion variant is reserved for Agent Interaction and currently returns NOT_IMPLEMENTED."
+    )]
     async fn input_mouse(&self, Parameters(params): Parameters<InputMouseParams>) -> String {
         match params.event.as_str() {
             "motion" => self.state.call(McpCommand::InputMouseMove {
@@ -992,7 +982,9 @@ impl BevyMcpServer {
         }
     }
 
-    #[tool(description = "Inject a high-level input action (e.g. 'move_forward', 'fire')")]
+    #[tool(
+        description = "Unavailable without a game-specific semantic action adapter; use semantic_action_invoke for registered game actions."
+    )]
     async fn input_action(&self, Parameters(_params): Parameters<InputActionParams>) -> String {
         error(
             "NOT_IMPLEMENTED",
@@ -1000,27 +992,30 @@ impl BevyMcpServer {
         )
     }
 
-    #[tool(description = "Inject a gamepad button press/release")]
+    #[tool(
+        description = "Inject a gamepad button press/release when Bevy's ButtonInput<GamepadButton> resource is installed."
+    )]
     async fn input_gamepad(&self, Parameters(params): Parameters<InputGamepadParams>) -> String {
-        // Gamepad input requires GamepadInput resource which is not yet implemented.
-        // For now, return a clear error.
-        serde_json::json!({
-            "error": "NOT_IMPLEMENTED",
-            "message": format!("Gamepad injection not yet implemented (button={})", params.button)
-        })
-        .to_string()
+        self.state
+            .call(McpCommand::InputGamepad {
+                button: params.button,
+                pressed: params.pressed.unwrap_or(true),
+            })
+            .await
     }
 
     // -- Capture --
 
-    #[tool(description = "Capture a screenshot of the game viewport")]
+    #[tool(
+        description = "DEPRECATED alias for capture_viewport using the primary window defaults."
+    )]
     async fn capture_game(&self) -> String {
         self.state.call(McpCommand::CaptureGame).await
     }
 
     // -- Assets --
 
-    #[tool(description = "List loaded assets, optionally filtered by type")]
+    #[tool(description = "Reserved: loaded-asset enumeration is not implemented yet.")]
     async fn asset_list(&self, Parameters(params): Parameters<AssetListParams>) -> String {
         self.state
             .call(McpCommand::AssetList {
@@ -1029,21 +1024,21 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Get asset metadata by path")]
+    #[tool(description = "Reserved: asset metadata inspection is not implemented yet.")]
     async fn asset_get(&self, Parameters(params): Parameters<AssetGetParams>) -> String {
         self.state
             .call(McpCommand::AssetGet { path: params.path })
             .await
     }
 
-    #[tool(description = "Get asset loading status")]
+    #[tool(description = "Reserved: asset loading-status inspection is not implemented yet.")]
     async fn asset_status(&self, Parameters(params): Parameters<AssetStatusParams>) -> String {
         self.state
             .call(McpCommand::AssetStatus { path: params.path })
             .await
     }
 
-    #[tool(description = "Force reload an asset")]
+    #[tool(description = "Reserved: asset reload is not implemented yet.")]
     async fn asset_reload(&self, Parameters(params): Parameters<AssetReloadParams>) -> String {
         self.state
             .call(McpCommand::AssetReload { path: params.path })
@@ -1161,7 +1156,7 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Move the inspection camera to frame a specific entity")]
+    #[tool(description = "Reserved for Agent Interaction: camera framing is not implemented yet.")]
     async fn camera_frame_entity(
         &self,
         Parameters(params): Parameters<CameraFrameParams>,
@@ -1180,7 +1175,9 @@ impl BevyMcpServer {
         self.state.call(McpCommand::CameraInspect).await
     }
 
-    #[tool(description = "Set camera position")]
+    #[tool(
+        description = "Reserved for Agent Interaction: camera transform control is not implemented yet."
+    )]
     async fn camera_set_transform(
         &self,
         Parameters(params): Parameters<CameraSetTransformParams>,
@@ -1194,7 +1191,9 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Point camera at an entity")]
+    #[tool(
+        description = "Reserved for Agent Interaction: camera look-at control is not implemented yet."
+    )]
     async fn camera_look_at(&self, Parameters(params): Parameters<CameraLookAtParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
@@ -1203,7 +1202,9 @@ impl BevyMcpServer {
         self.state.call(McpCommand::CameraLookAt { entity }).await
     }
 
-    #[tool(description = "Capture a screenshot from the active camera")]
+    #[tool(
+        description = "DEPRECATED alias for capture_viewport. Use capture_viewport with an explicit camera entity for camera-target capture."
+    )]
     async fn capture_camera(&self) -> String {
         self.state.call(McpCommand::CaptureCamera).await
     }
@@ -1227,7 +1228,9 @@ impl BevyMcpServer {
 
     // -- Build --
 
-    #[tool(description = "Run cargo check on the project. Returns structured errors.")]
+    #[tool(
+        description = "Unavailable from the embedded MCP server; run cargo check in a trusted development shell."
+    )]
     async fn build_check(&self) -> String {
         error(
             "BUILD_NOT_AVAILABLE",
@@ -1235,7 +1238,9 @@ impl BevyMcpServer {
         )
     }
 
-    #[tool(description = "Build the project with cargo. Returns structured build result.")]
+    #[tool(
+        description = "Unavailable from the embedded MCP server; run cargo build in a trusted development shell."
+    )]
     async fn build(&self, Parameters(_params): Parameters<BuildParams>) -> String {
         error(
             "BUILD_NOT_AVAILABLE",
@@ -1243,7 +1248,9 @@ impl BevyMcpServer {
         )
     }
 
-    #[tool(description = "Run cargo test. Returns structured test results.")]
+    #[tool(
+        description = "Unavailable from the embedded MCP server; run cargo test in a trusted development shell."
+    )]
     async fn test(&self, Parameters(_params): Parameters<TestParams>) -> String {
         error(
             "BUILD_NOT_AVAILABLE",
