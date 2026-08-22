@@ -23,6 +23,16 @@ jobs:
           set -euo pipefail
           python scripts/patch_s1.py
           python scripts/patch_s2a.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/patch_s2b.py')
+          text = path.read_text()
+          old = '    #[tool(description = "Return explicit timing samples recorded through the MCP timing registry.")]\\n    async fn system_timings'
+          new = '    #[tool(description = "Return explicitly instrumented per-system timing statistics.")]\\n    async fn system_timings'
+          if old not in text:
+              raise SystemExit('patch_s2b timing anchor definition not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
           python scripts/patch_s2b.py
           python scripts/patch_s4_1.py
           python scripts/patch_s4_2.py
