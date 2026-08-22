@@ -24,7 +24,6 @@ def regex_once(text, pattern, repl, label):
         raise RuntimeError(f'regex replacement count={n}: {label}')
     return out
 
-# Host debugger imports + requests + recording/replay tick + tracking interests.
 path = 'crates/bevy-mcp-host/src/debugger.rs'
 t = read(path)
 if 'use crate::checkpoint::' not in t:
@@ -140,7 +139,7 @@ t = replace_once(t, '''        DebugRequest::PlaytestStart { .. } | DebugRequest
         DebugRequest::CheckpointRestore { .. } => permissions.can_mutate(),
 ''', 'debug permissions S4')
 
-semantic_pattern = r'''            DebugPlaytestStep::SemanticAction \{ action, args \} => \{.*?            \}\n            DebugPlaytestStep::StateTransition'''
+semantic_pattern = r'''            DebugPlaytestStep::SemanticAction \{ action, args \} => \{.*?\n            \}\n            DebugPlaytestStep::StateTransition'''
 semantic_repl = r'''            DebugPlaytestStep::SemanticAction { action, args } => {
                 let requested_args = args.clone();
                 let result = world.resource_scope(|world, actions: Mut<McpActionRegistry>| {
@@ -159,7 +158,7 @@ semantic_repl = r'''            DebugPlaytestStep::SemanticAction { action, args
             }
             DebugPlaytestStep::StateTransition'''
 t = regex_once(t, semantic_pattern, semantic_repl, 'rewrite semantic action recording')
-state_pattern = r'''            DebugPlaytestStep::StateTransition \{ state, value \} => \{.*?            \}\n            DebugPlaytestStep::Key'''
+state_pattern = r'''            DebugPlaytestStep::StateTransition \{ state, value \} => \{.*?\n            \}\n            DebugPlaytestStep::Key'''
 state_repl = r'''            DebugPlaytestStep::StateTransition { state, value } => {
                 let requested_value = value.clone();
                 let result = world.resource_scope(|world, states: Mut<McpStateRegistry>| {
