@@ -1,6 +1,7 @@
 pub mod advanced;
 pub mod capability;
 pub mod command;
+pub mod debug;
 pub mod entity_handle;
 pub mod error;
 pub mod instance;
