@@ -695,7 +695,7 @@ fn writers_for(
         );
     };
     let canonical = info.name().to_string();
-    let is_resource = world.contains_resource_by_id(info.id());
+    let is_resource = requested_kind == "resource";
 
     let exact_writers = world
         .get_resource::<McpSystemAccessRegistry>()
