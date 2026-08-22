@@ -17,16 +17,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: agent/debugging-intelligence-s1-s4
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Apply staged implementation
-        run: |
-          python scripts/patch_s1.py
-          python scripts/patch_s2a.py
-          python scripts/patch_s2b.py
-          python scripts/patch_s4_1.py
-          python scripts/patch_s4_2.py
-          python scripts/patch_s4_3.py
-          cargo fmt --all
       - name: Install Bevy Linux dependencies
         run: |
           sudo apt-get update
@@ -35,16 +27,38 @@ jobs:
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev
-      - name: Compile integrated implementation
-        run: cargo check --workspace --all-targets
-      - name: Remove temporary patch machinery
+      - name: Apply, validate, and publish integrated implementation
+        shell: bash
         run: |
-          rm -f scripts/patch_s1.py scripts/patch_s2a.py scripts/patch_s2b.py scripts/patch_s4_1.py scripts/patch_s4_2.py scripts/patch_s4_3.py
-          rm -f .github/workflows/apply-s1-s4.yml
-      - name: Commit integrated implementation
-        run: |
+          set +e
+          rm -f integration-failure.log
+          {
+            set -x
+            python scripts/patch_s1.py
+            python scripts/patch_s2a.py
+            python scripts/patch_s2b.py
+            python scripts/patch_s4_1.py
+            python scripts/patch_s4_2.py
+            python scripts/patch_s4_3.py
+            cargo fmt --all
+            cargo check --workspace --all-targets
+          } > integration-run.log 2>&1
+          status=$?
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "$status" -ne 0 ]; then
+            cp integration-run.log integration-failure.log
+            git add -- integration-failure.log
+            git commit -m "Record S1-S4 integration failure" || true
+            git push origin HEAD:agent/debugging-intelligence-s1-s4
+            exit "$status"
+          fi
+
+          rm -f scripts/patch_s1.py scripts/patch_s2a.py scripts/patch_s2b.py scripts/patch_s4_1.py scripts/patch_s4_2.py scripts/patch_s4_3.py
+          rm -f .github/workflows/apply-s1-s4.yml integration-run.log integration-failure.log
           git add -- \
             crates/bevy-mcp-core/src/advanced.rs \
             crates/bevy-mcp-core/src/debug.rs \
@@ -68,6 +82,7 @@ jobs:
             scripts/patch_s4_1.py \
             scripts/patch_s4_2.py \
             scripts/patch_s4_3.py \
-            .github/workflows/apply-s1-s4.yml
+            .github/workflows/apply-s1-s4.yml \
+            integration-failure.log
           git commit -m "Add concurrent debugging intelligence and deterministic replay"
           git push origin HEAD:agent/debugging-intelligence-s1-s4
