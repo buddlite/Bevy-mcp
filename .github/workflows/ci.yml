@@ -27,10 +27,10 @@ jobs:
           from pathlib import Path
           path = Path('scripts/patch_s2b.py')
           text = path.read_text()
-          old = '    #[tool(description = "Return explicit timing samples recorded through the MCP timing registry.")]\\n    async fn system_timings'
-          new = '    #[tool(description = "Return explicitly instrumented per-system timing statistics.")]\\n    async fn system_timings'
+          old = 'Return explicit timing samples recorded through the MCP timing registry.'
+          new = 'Return explicitly instrumented per-system timing statistics.'
           if old not in text:
-              raise SystemExit('patch_s2b timing anchor definition not found')
+              raise SystemExit('patch_s2b timing description not found')
           path.write_text(text.replace(old, new, 1))
           PY
           python scripts/patch_s2b.py
