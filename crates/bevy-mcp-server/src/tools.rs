@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bevy_mcp_core::command::McpCommand;
+use bevy_mcp_core::command::{McpCommand, MutationOperation};
 use bevy_mcp_core::entity_handle::EntityHandle;
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
@@ -344,10 +344,12 @@ pub struct BatchParams {
     pub operations: Vec<BatchOperation>,
     #[schemars(description = "If true, stop on first error")]
     pub stop_on_error: Option<bool>,
-    #[schemars(description = "Unsupported. Atomic rollback is not available.")]
+    #[schemars(
+        description = "If true, execute supported reflected mutations as one prevalidated all-or-nothing transaction."
+    )]
     pub atomic: Option<bool>,
     #[schemars(
-        description = "If true, return a preview without applying changes. Arguments are not validated."
+        description = "For atomic batches, validate the full transaction without committing. For sequential batches, return an unvalidated preview."
     )]
     pub dry_run: Option<bool>,
     #[schemars(description = "Unsupported. Per-operation verification is not available.")]
@@ -1440,7 +1442,7 @@ impl BevyMcpServer {
     // -- Batch --
 
     #[tool(
-        description = "Execute a limited set of read operations sequentially. Preview mode does not validate arguments."
+        description = "Execute limited reads sequentially, or set atomic=true for a prevalidated all-or-nothing reflected mutation batch. Atomic operations: component_insert, component_update, component_remove, resource_update."
     )]
     async fn batch(&self, Parameters(params): Parameters<BatchParams>) -> String {
         let mut results = Vec::new();
@@ -1449,14 +1451,36 @@ impl BevyMcpServer {
         let atomic = params.atomic.unwrap_or(false);
         let verify = params.verify.unwrap_or(false);
 
-        if atomic || verify {
+        if verify {
             return error(
                 "UNSUPPORTED_BATCH_MODE",
-                "Atomic rollback and verification are not implemented; use sequential mode or preview mode",
+                "Per-operation verification is not implemented",
             );
         }
 
-        // In dry_run mode, just validate the operations without executing.
+        if atomic {
+            let mut operations = Vec::with_capacity(params.operations.len());
+            for (index, operation) in params.operations.iter().enumerate() {
+                match mutation_operation_from_batch(operation) {
+                    Ok(operation) => operations.push(operation),
+                    Err(message) => {
+                        return error(
+                            "INVALID_ATOMIC_OPERATION",
+                            format!("Operation {index}: {message}"),
+                        );
+                    }
+                }
+            }
+            return self
+                .state
+                .call(McpCommand::AtomicMutationBatch {
+                    operations,
+                    dry_run,
+                })
+                .await;
+        }
+
+        // Sequential dry-run mode is intentionally a preview only; arguments are not validated.
         if dry_run {
             for op in &params.operations {
                 results.push(serde_json::json!({
@@ -1556,6 +1580,53 @@ impl BevyMcpServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn mutation_operation_from_batch(operation: &BatchOperation) -> Result<MutationOperation, String> {
+    let arguments = operation
+        .arguments
+        .clone()
+        .ok_or_else(|| format!("{} requires arguments", operation.tool))?;
+
+    match operation.tool.as_str() {
+        "component_insert" => {
+            let params: ComponentInsertParams = serde_json::from_value(arguments)
+                .map_err(|error| format!("invalid component_insert arguments: {error}"))?;
+            Ok(MutationOperation::ComponentInsert {
+                entity: parse_entity_handle(&params.entity)?,
+                component: params.component,
+                value: params.value,
+            })
+        }
+        "component_update" => {
+            let params: ComponentUpdateParams = serde_json::from_value(arguments)
+                .map_err(|error| format!("invalid component_update arguments: {error}"))?;
+            Ok(MutationOperation::ComponentUpdate {
+                entity: parse_entity_handle(&params.entity)?,
+                component: params.component,
+                value: params.value,
+            })
+        }
+        "component_remove" => {
+            let params: ComponentRemoveParams = serde_json::from_value(arguments)
+                .map_err(|error| format!("invalid component_remove arguments: {error}"))?;
+            Ok(MutationOperation::ComponentRemove {
+                entity: parse_entity_handle(&params.entity)?,
+                component: params.component,
+            })
+        }
+        "resource_update" => {
+            let params: ResourceUpdateParams = serde_json::from_value(arguments)
+                .map_err(|error| format!("invalid resource_update arguments: {error}"))?;
+            Ok(MutationOperation::ResourceUpdate {
+                resource: params.resource,
+                value: params.value,
+            })
+        }
+        other => Err(format!(
+            "tool '{other}' cannot participate in an atomic mutation batch; supported tools are component_insert, component_update, component_remove, resource_update"
+        )),
+    }
+}
+
 fn parse_entity_handle(uri: &str) -> Result<EntityHandle, String> {
     let handle = EntityHandle::from_uri(uri)?;
     if handle.instance != "default" || handle.world != "main" {
@@ -1573,6 +1644,34 @@ fn error(code: &str, message: impl Into<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_batch_parser_accepts_component_update() {
+        let operation = BatchOperation {
+            tool: "component_update".into(),
+            arguments: Some(serde_json::json!({
+                "entity": "entity://default/main/42/3",
+                "component": "Health",
+                "value": { "current": 75 }
+            })),
+        };
+        assert!(matches!(
+            mutation_operation_from_batch(&operation),
+            Ok(MutationOperation::ComponentUpdate { .. })
+        ));
+    }
+
+    #[test]
+    fn atomic_batch_parser_rejects_read_tools() {
+        let operation = BatchOperation {
+            tool: "entity_get".into(),
+            arguments: Some(serde_json::json!({
+                "entity": "entity://default/main/42/3"
+            })),
+        };
+        let error = mutation_operation_from_batch(&operation).unwrap_err();
+        assert!(error.contains("cannot participate"));
+    }
 
     #[test]
     fn entity_handles_must_be_complete_and_in_the_default_world() {

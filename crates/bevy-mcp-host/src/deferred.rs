@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use serde_json::Value;
 
-use bevy_mcp_core::command::McpCommand;
+use bevy_mcp_core::command::{McpCommand, MutationOperation};
 use bevy_mcp_core::entity_handle::EntityHandle;
 
 /// Deferred commands that can't be applied from a read-only system.
@@ -32,6 +32,11 @@ pub enum DeferredCommand {
     RemoveComponent {
         entity: Entity,
         component: String,
+        result_id: u64,
+    },
+    AtomicMutationBatch {
+        operations: Vec<MutationOperation>,
+        dry_run: bool,
         result_id: u64,
     },
     InputKey {

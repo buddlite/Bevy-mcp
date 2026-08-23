@@ -45,7 +45,9 @@ Inspect the world, query entities, read reflected components and resources, insp
 
 Spawn and despawn entities, insert/update/remove reflected components, update resources, reparent entities, transition registered Bevy states, invoke game-defined semantic actions, and create procedural meshes/templates. ECS mutations are deferred to safe schedule boundaries.
 
-**Representative tools:** `entity_spawn` · `entity_despawn` · `component_insert` · `component_update` · `component_remove` · `resource_update` · `entity_reparent` · `state_transition` · `semantic_action_invoke` · `mesh_spawn` · `template_save` · `template_load`
+For multi-write edits, `batch` with `atomic: true` provides a prevalidated all-or-nothing transaction for reflected `component_insert`, `component_update`, `component_remove`, and `resource_update` operations. The entire batch is validated against one exclusive world snapshot before the first write; `dry_run: true` performs the same validation without committing.
+
+**Representative tools:** `entity_spawn` · `entity_despawn` · `component_insert` · `component_update` · `component_remove` · `resource_update` · `batch` · `entity_reparent` · `state_transition` · `semantic_action_invoke` · `mesh_spawn` · `template_save` · `template_load`
 
 ### Native agent interaction
 
@@ -115,7 +117,7 @@ The front page intentionally distinguishes registered tools from capabilities th
 
 - **Embedded build tools are disabled.** `build_check`, `build`, and `test` return `BUILD_NOT_AVAILABLE`; run Cargo commands from a trusted development shell.
 - **Loaded-asset enumeration is not implemented.** `asset_list` is reserved; use known-path inspection with `asset_get` / `asset_status`.
-- **Atomic batch rollback is not implemented.** `batch` supports a limited sequential read surface and preview mode; `atomic` and `verify` modes are rejected.
+- **Atomic batch scope is intentionally narrow.** Atomic mode currently accepts reflected `component_insert`, `component_update`, `component_remove`, and `resource_update`. Entity lifecycle, hierarchy changes, runtime/input operations, semantic actions, and other arbitrary side effects are not transaction members. `verify` mode remains unavailable.
 - **Entity duplication is reserved.** Safe reflected component cloning is not implemented yet.
 - **Embedded lifecycle ownership remains external.** `runtime_launch`, `runtime_stop`, and `runtime_restart` are unavailable when the game process owns its own lifecycle.
 - **Generic high-level `input_action` is not implemented.** Games should register semantic actions and use `semantic_action_list` / `semantic_action_invoke`.

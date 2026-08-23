@@ -57,6 +57,10 @@ pub enum McpCommand {
         entity: EntityHandle,
         component: String,
     },
+    AtomicMutationBatch {
+        operations: Vec<MutationOperation>,
+        dry_run: bool,
+    },
 
     // -- Runtime --
     RuntimeLaunch,
@@ -250,6 +254,29 @@ pub enum McpCommand {
     },
     Assert {
         assertion: Assertion,
+    },
+}
+
+/// A reflected ECS/resource mutation that can participate in an atomic batch.
+#[derive(Debug, Clone)]
+pub enum MutationOperation {
+    ComponentInsert {
+        entity: EntityHandle,
+        component: String,
+        value: Value,
+    },
+    ComponentUpdate {
+        entity: EntityHandle,
+        component: String,
+        value: Value,
+    },
+    ComponentRemove {
+        entity: EntityHandle,
+        component: String,
+    },
+    ResourceUpdate {
+        resource: String,
+        value: Value,
     },
 }
 
