@@ -24,7 +24,7 @@ jobs:
         run: cargo test --workspace
 
   harden-agent-interaction:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/agent/agent-interaction'
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/agent-interaction'
     runs-on: ubuntu-latest
     permissions:
       contents: write
