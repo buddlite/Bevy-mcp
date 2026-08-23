@@ -1,20 +1,20 @@
 name: Bootstrap camera framing
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/bounds-aware-camera-frame
+      - v.01
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 concurrency:
-  group: bootstrap-camera-frame
-  cancel-in-progress: false
+  group: bootstrap-camera-frame-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   apply-and-validate:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
