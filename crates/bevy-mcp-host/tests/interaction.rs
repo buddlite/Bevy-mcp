@@ -63,6 +63,8 @@ fn ui_type_queues_native_editable_text_edit() {
 
 #[test]
 fn camera_controls_mutate_active_camera() {
+    use bevy::camera::primitives::Aabb;
+
     let ingress = McpIngressQueue::default();
     let results = McpResultQueue::default();
     let mut app = App::new();
@@ -74,11 +76,24 @@ fn camera_controls_mutate_active_camera() {
 
     let camera = app
         .world_mut()
-        .spawn((Camera::default(), Transform::from_xyz(0.0, 0.0, 10.0)))
+        .spawn((
+            Camera::default(),
+            bevy::camera::Projection::Perspective(bevy::camera::PerspectiveProjection {
+                fov: std::f32::consts::FRAC_PI_2,
+                aspect_ratio: 1.0,
+                near: 0.1,
+                far: 1000.0,
+                ..default()
+            }),
+            Transform::from_xyz(0.0, 0.0, 10.0),
+        ))
         .id();
     let target = app
         .world_mut()
-        .spawn(Transform::from_xyz(1.0, 2.0, 3.0))
+        .spawn((
+            Transform::from_xyz(1.0, 2.0, 3.0),
+            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::splat(1.0)),
+        ))
         .id();
 
     ingress.push(
@@ -110,11 +125,184 @@ fn camera_controls_mutate_active_camera() {
         4,
         McpCommand::CameraFrameEntity {
             entity: handle(target),
+            margin: 0.15,
         },
     );
     app.update();
     let frame = success_for(&results, 4);
-    assert!(frame["distance"].as_f64().unwrap() > 0.0);
+    assert_eq!(frame["framing"]["projection"], "perspective");
+    assert!(frame["framing"]["distance"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn camera_frame_aggregates_descendant_bounds_for_perspective_camera() {
+    use bevy::camera::primitives::Aabb;
+    use bevy::ecs::hierarchy::ChildOf;
+
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions::full()),
+    );
+
+    app.world_mut().spawn((
+        Camera::default(),
+        bevy::camera::Projection::Perspective(bevy::camera::PerspectiveProjection {
+            fov: std::f32::consts::FRAC_PI_2,
+            aspect_ratio: 1.0,
+            near: 0.1,
+            far: 1000.0,
+            ..default()
+        }),
+        Transform::from_xyz(0.0, 0.0, 20.0),
+    ));
+    let root = app.world_mut().spawn(Transform::default()).id();
+    let unit_bounds = Aabb::from_min_max(Vec3::splat(-1.0), Vec3::splat(1.0));
+    app.world_mut().spawn((
+        Transform::from_xyz(-4.0, 0.0, 0.0),
+        unit_bounds,
+        ChildOf(root),
+    ));
+    app.world_mut().spawn((
+        Transform::from_xyz(4.0, 0.0, 0.0),
+        unit_bounds,
+        ChildOf(root),
+    ));
+
+    ingress.push(
+        30,
+        McpCommand::CameraFrameEntity {
+            entity: handle(root),
+            margin: 0.2,
+        },
+    );
+    app.update();
+    let frame = success_for(&results, 30);
+    assert_eq!(frame["bounded_entities"], 2);
+    assert_eq!(frame["bounds"]["min"]["x"], -5.0);
+    assert_eq!(frame["bounds"]["max"]["x"], 5.0);
+    let distance = frame["framing"]["distance"].as_f64().unwrap();
+    assert!(
+        (distance - 7.0).abs() < 0.01,
+        "distance={distance}, frame={frame}"
+    );
+}
+
+#[test]
+fn camera_frame_updates_orthographic_scale() {
+    use bevy::camera::primitives::Aabb;
+
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions::full()),
+    );
+
+    let mut orthographic = bevy::camera::OrthographicProjection::default_3d();
+    orthographic.scale = 1.0;
+    orthographic.area = Rect::new(-4.0, -3.0, 4.0, 3.0);
+    orthographic.near = 0.0;
+    orthographic.far = 100.0;
+    let camera = app
+        .world_mut()
+        .spawn((
+            Camera::default(),
+            bevy::camera::Projection::Orthographic(orthographic),
+            Transform::from_xyz(0.0, 0.0, 10.0),
+        ))
+        .id();
+    let target = app
+        .world_mut()
+        .spawn((
+            Transform::default(),
+            Aabb::from_min_max(Vec3::new(-2.0, -1.0, -1.0), Vec3::new(2.0, 1.0, 1.0)),
+        ))
+        .id();
+
+    ingress.push(
+        31,
+        McpCommand::CameraFrameEntity {
+            entity: handle(target),
+            margin: 0.25,
+        },
+    );
+    app.update();
+    let frame = success_for(&results, 31);
+    assert_eq!(frame["framing"]["projection"], "orthographic");
+    let scale = frame["framing"]["scale"].as_f64().unwrap();
+    assert!(
+        (scale - 0.625).abs() < 0.001,
+        "scale={scale}, frame={frame}"
+    );
+    let projection = app.world().get::<bevy::camera::Projection>(camera).unwrap();
+    let bevy::camera::Projection::Orthographic(value) = projection else {
+        panic!("expected orthographic projection");
+    };
+    assert!((value.scale - 0.625).abs() < 0.001);
+}
+
+#[test]
+fn camera_frame_preserves_world_space_for_parented_camera() {
+    use bevy::camera::primitives::Aabb;
+    use bevy::ecs::hierarchy::ChildOf;
+
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions::full()),
+    );
+
+    let rig = app
+        .world_mut()
+        .spawn(Transform::from_xyz(10.0, 0.0, 0.0))
+        .id();
+    let camera = app
+        .world_mut()
+        .spawn((
+            Camera::default(),
+            bevy::camera::Projection::Perspective(bevy::camera::PerspectiveProjection {
+                fov: std::f32::consts::FRAC_PI_2,
+                aspect_ratio: 1.0,
+                near: 0.1,
+                far: 1000.0,
+                ..default()
+            }),
+            Transform::from_xyz(-10.0, 0.0, 10.0),
+            ChildOf(rig),
+        ))
+        .id();
+    let target = app
+        .world_mut()
+        .spawn((
+            Transform::default(),
+            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::splat(1.0)),
+        ))
+        .id();
+
+    ingress.push(
+        32,
+        McpCommand::CameraFrameEntity {
+            entity: handle(target),
+            margin: 0.15,
+        },
+    );
+    app.update();
+    let frame = success_for(&results, 32);
+    assert_eq!(frame["framing"]["projection"], "perspective");
+    let local = app.world().get::<Transform>(camera).unwrap();
+    assert!(
+        (local.translation.x + 10.0).abs() < 0.001,
+        "local={local:?}"
+    );
 }
 
 #[test]

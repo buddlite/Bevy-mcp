@@ -61,6 +61,7 @@ pub enum DeferredCommand {
     },
     CameraFrameEntity {
         entity: EntityHandle,
+        margin: f64,
         result_id: u64,
     },
     CameraSetTransform {

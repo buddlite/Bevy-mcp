@@ -196,6 +196,7 @@ pub enum McpCommand {
     // -- Camera --
     CameraFrameEntity {
         entity: EntityHandle,
+        margin: f64,
     },
     CameraInspect,
     CameraSetTransform {

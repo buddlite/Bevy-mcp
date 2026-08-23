@@ -308,6 +308,10 @@ pub struct TestParams {
 pub struct CameraFrameParams {
     #[schemars(description = "Entity handle URI to frame")]
     pub entity: String,
+    #[schemars(
+        description = "Fractional framing margin around the aggregate bounds (default 0.15)"
+    )]
+    pub margin: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1327,7 +1331,7 @@ impl BevyMcpServer {
     }
 
     #[tool(
-        description = "Frame an entity with the active camera while preserving the current camera-target distance."
+        description = "Fit an entity and its descendant render bounds in the active perspective or orthographic camera."
     )]
     async fn camera_frame_entity(
         &self,
@@ -1337,8 +1341,15 @@ impl BevyMcpServer {
             Ok(handle) => handle,
             Err(message) => return error("INVALID_HANDLE", message),
         };
+        let margin = params.margin.unwrap_or(0.15);
+        if !margin.is_finite() || !(0.0..=2.0).contains(&margin) {
+            return error(
+                "INVALID_MARGIN",
+                "margin must be a finite value between 0.0 and 2.0",
+            );
+        }
         self.state
-            .call(McpCommand::CameraFrameEntity { entity })
+            .call(McpCommand::CameraFrameEntity { entity, margin })
             .await
     }
 
