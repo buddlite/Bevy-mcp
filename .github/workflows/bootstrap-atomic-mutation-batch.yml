@@ -32,6 +32,25 @@ jobs:
             libxkbcommon-dev
       - name: Apply source transformation
         run: python .github/bootstrap_atomic_mutation_batch.py
+      - name: Fix core entity-handle qualification
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/bevy-mcp-host/src/systems.rs")
+          text = path.read_text(encoding="utf-8")
+          old = "entity_handle: &EntityHandle,"
+          count = text.count(old)
+          if count != 2:
+              raise RuntimeError(f"expected 2 EntityHandle helper signatures, found {count}")
+          path.write_text(
+              text.replace(
+                  old,
+                  "entity_handle: &bevy_mcp_core::entity_handle::EntityHandle,",
+              ),
+              encoding="utf-8",
+          )
+          PY
       - name: Format workspace
         run: cargo fmt --all
       - name: Check workspace
