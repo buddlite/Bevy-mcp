@@ -35,7 +35,7 @@ anchors = {
     "asset_list": at("fn asset_list("),
     "capture_game": at("fn capture_game("),
     "parse_keycode": at("fn parse_keycode("),
-    "mesh_spawn": at("fn mesh_spawn_apply("),
+    "mesh_spawn": at("#[allow(clippy::too_many_arguments)]\nfn mesh_spawn_apply("),
 }
 
 order = list(anchors.values())
