@@ -2,10 +2,11 @@
 
 # bevy-mcp
 
-**Give AI agents real power over your Bevy game.**
+**Give AI agents structured, runtime control over a live Bevy game.**
 
-61 tools for ECS inspection, mutation, runtime control, input injection, and more —
-all through the [Model Context Protocol](https://modelcontextprotocol.io/).
+Inspect the ECS, mutate reflected state, interact through Bevy's native input and picking paths,
+run assertions and agent playtests, capture runtime evidence, and debug what changed — all through the
+[Model Context Protocol](https://modelcontextprotocol.io/).
 
 [![Crates.io](https://img.shields.io/crates/v/bevy-mcp-host)](https://crates.io/crates/bevy-mcp-host)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -15,42 +16,150 @@ all through the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ---
 
-## Why bevy-mcp?
+## What bevy-mcp is
 
-Other engines bolt AI integration on from the outside. Bevy-mcp is **embedded directly in your game binary** — the AI agent lives inside the same process as your ECS, with zero network overhead and full access to Bevy's type system.
+bevy-mcp embeds an MCP host directly in your Bevy application and exposes the live world to an MCP-compatible coding agent. The client still talks MCP over stdio, but ECS reads, deferred mutations, debugging state, input injection, and runtime control are handled inside the game process instead of through an external engine bridge.
 
-- **Stop guessing, start inspecting.** Your agent queries real entity data through Bevy's reflection system — not screen scraping, not log parsing, not brittle string matching. Ask "what entities have a `Health` component?" and get structured JSON back.
+The goal is not just inspection. The current tool surface supports a practical autonomous development loop:
 
-- **Mutate safely, every time.** All ECS mutations go through a deferred command queue that executes at safe schedule boundaries. No mid-frame corruption, no ordering surprises. The agent writes intent, the engine applies it at the right moment.
+```text
+inspect -> identify target -> mutate -> run/step -> interact -> assert
+   ^                                                     |
+   |                                                     v
+retry <- replay/checkpoint <- inspect evidence <- diagnose failure
+```
 
-- **Control the whole lifecycle.** Pause, resume, step frame-by-frame, adjust time scale, inject keyboard/mouse/gamepad input, click UI buttons, and capture screenshots — your agent has the same control as a human player with a debugger attached.
+That makes bevy-mcp useful for coding agents that need to understand and manipulate a running game instead of guessing from source code alone.
 
-- **Ship with confidence.** A built-in permission system gates what the agent can do: `Read` for observation only, `Write` for ECS mutation, `Full` for input and runtime control. No agent oversteps unless you explicitly allow it.
+---
+
+## Current capabilities
+
+### ECS inspection and reflection
+
+Inspect the world, query entities, read reflected components and resources, inspect schemas, traverse hierarchy, and run richer agent-oriented queries with field predicates, hierarchy relationships, name matching, included reflected values, and recent-change filters.
+
+**Representative tools:** `world_summary` · `world_context_scan` · `entity_query` · `entity_query_advanced` · `entity_get` · `component_get` · `component_schema` · `resource_list` · `resource_get` · `resource_schema` · `hierarchy`
+
+### Safe ECS mutation
+
+Spawn and despawn entities, insert/update/remove reflected components, update resources, reparent entities, transition registered Bevy states, invoke game-defined semantic actions, and create procedural meshes/templates. ECS mutations are deferred to safe schedule boundaries.
+
+**Representative tools:** `entity_spawn` · `entity_despawn` · `component_insert` · `component_update` · `component_remove` · `resource_update` · `entity_reparent` · `state_transition` · `semantic_action_invoke` · `mesh_spawn` · `template_save` · `template_load`
+
+### Native agent interaction
+
+Drive the game through Bevy's native input and picking paths. The MCP software pointer can move, identify ordered picking hits, click, drag, and scroll. UI nodes can be queried, inspected, clicked by entity, and supplied with native editable-text input.
+
+**Representative tools:** `input_key` · `input_mouse` · `input_gamepad` · `pick_at` · `pointer_move` · `pointer_click` · `pointer_drag` · `pointer_scroll` · `ui_query` · `ui_inspect` · `ui_click` · `ui_type`
+
+### Camera control and visual evidence
+
+Inspect and move the active camera, aim at entities, capture the primary viewport or a camera render target, crop captures, and target registered UI-only render targets.
+
+`camera_frame_entity` performs editor-style framing rather than merely aiming at an entity. It aggregates `Aabb` bounds across the target and its descendants, transforms them into world space, fits perspective cameras using FOV/aspect/clip planes, fits orthographic cameras through projection scale, supports a configurable margin, and preserves world-space behavior for parented camera rigs.
+
+**Representative tools:** `camera_list` · `camera_inspect` · `camera_set_transform` · `camera_look_at` · `camera_frame_entity` · `capture_viewport`
+
+### Reflected assertions
+
+Assert live game state directly through reflection:
+
+- `entity_exists`
+- `component_exists`
+- `entity_count`
+- `component_equals`
+- `resource_equals`
+
+`component_equals` and `resource_equals` support dot-separated reflected field paths, including array indices, so an agent can assert nested state instead of only checking top-level values.
+
+**Tool:** `assert`
+
+### Agent playtests and watchpoints
+
+Run non-blocking, frame-driven playtests with semantic actions, state transitions, key input, explicit frame stepping, conditional waits, assertions, and captures. Failures can pause the runtime and return an evidence bundle containing recent changes, logs, events, registered states, system timings, and screenshot status.
+
+Frame-evaluated watchpoints can monitor conditions such as entity existence, query counts, reflected fields, state values, logs, change events, and frame thresholds.
+
+**Representative tools:** `playtest_start` · `playtest_status` · `playtest_list` · `playtest_cancel` · `watchpoint_add` · `watchpoint_list` · `watchpoint_remove` · `watchpoint_clear`
+
+### Runtime and causal debugging
+
+Inspect changes since a frame, entity/component/resource deltas, Bevy schedules and systems, tracked access, writer candidates, change-tracking configuration, system timings, logs, events, and diagnostics.
+
+For causal debugging, exact writer information is available for MCP-registered system access; Bevy conflict evidence is used as a fallback where exact provenance is not instrumented.
+
+**Representative tools:** `changes_since` · `entity_changes` · `component_changes` · `resource_changes` · `schedule_list` · `schedule_inspect` · `system_list` · `system_inspect` · `system_access` · `component_writers` · `resource_writers` · `tracking_config` · `tracking_status` · `system_timings` · `logs` · `errors` · `observe_events` · `diagnostics`
+
+### Deterministic debugging
+
+Create and restore checkpoints for explicitly registered checkpoint state, record semantic actions/state transitions/debugger key injections with frame offsets, and replay those recordings — optionally after restoring a checkpoint.
+
+**Representative tools:** `checkpoint_create` · `checkpoint_list` · `checkpoint_restore` · `recording_start` · `recording_stop` · `recording_list` · `replay_start` · `replay_status` · `replay_cancel`
+
+### Asset-path debugging
+
+Inspect known asset paths, including active asset IDs, runtime type information, and load/dependency state. Active loaded asset paths can be queued for reload.
+
+**Representative tools:** `asset_get` · `asset_status` · `asset_reload`
+
+### Runtime capability contract
+
+Call `capabilities` to get the live host contract. It reports whether a feature is implemented, currently available in this app/runtime, and allowed by the active permission level. Agents should prefer this over assuming that every registered MCP tool is usable in every game configuration.
+
+---
+
+## Important current limitations
+
+The front page intentionally distinguishes registered tools from capabilities that are actually available today:
+
+- **Embedded build tools are disabled.** `build_check`, `build`, and `test` return `BUILD_NOT_AVAILABLE`; run Cargo commands from a trusted development shell.
+- **Loaded-asset enumeration is not implemented.** `asset_list` is reserved; use known-path inspection with `asset_get` / `asset_status`.
+- **Atomic batch rollback is not implemented.** `batch` supports a limited sequential read surface and preview mode; `atomic` and `verify` modes are rejected.
+- **Entity duplication is reserved.** Safe reflected component cloning is not implemented yet.
+- **Embedded lifecycle ownership remains external.** `runtime_launch`, `runtime_stop`, and `runtime_restart` are unavailable when the game process owns its own lifecycle.
+- **Generic high-level `input_action` is not implemented.** Games should register semantic actions and use `semantic_action_list` / `semantic_action_invoke`.
+- **Checkpoint coverage is explicit, not magical.** Only resources/custom state adapters registered for checkpointing are restored.
+- Some features depend on the runtime configuration: renderer/capture targets, picking, gamepad resources, registered states/actions, instrumentation, and permissions. Use `capabilities` to discover the live surface.
 
 ---
 
 ## Quick Start
 
-### 1. Add the dependency
+### 1. Add matching dependencies
+
+For a source checkout/workspace integration:
 
 ```toml
 [dependencies]
-bevy-mcp-host = "0.1"
+bevy = "0.19"
+bevy-mcp-core = { path = "path/to/Bevy-mcp/crates/bevy-mcp-core" }
+bevy-mcp-host = { path = "path/to/Bevy-mcp/crates/bevy-mcp-host" }
+bevy-mcp-server = { path = "path/to/Bevy-mcp/crates/bevy-mcp-server" }
+rmcp = { version = "3", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
 ```
 
-### 2. Add the plugin to your app
+Use matching published crate versions when consuming releases from crates.io.
+
+### 2. Embed the full agent server
+
+Use `AgentBevyMcpServer` for the complete base + advanced + debugger/playtest tool surface:
 
 ```rust
 use bevy::prelude::*;
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use bevy_mcp_host::{BevyMcpPlugin, McpPermissions};
-use bevy_mcp_server::tools::{BevyMcpServer, BevyMcpState};
+use bevy_mcp_server::AgentBevyMcpServer;
+use bevy_mcp_server::tools::BevyMcpState;
+use rmcp::{ServiceExt, transport::stdio};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ingress = McpIngressQueue::default();
     let results = McpResultQueue::default();
-    let server = BevyMcpServer::new(BevyMcpState::embedded(ingress.clone(), results.clone()));
+    let state = BevyMcpState::embedded(ingress.clone(), results.clone());
 
     std::thread::spawn(move || {
         App::new()
@@ -58,19 +167,22 @@ async fn main() -> anyhow::Result<()> {
             .add_plugins(
                 BevyMcpPlugin::new()
                     .with_queues(ingress, results)
-                    .with_permissions(McpPermissions::read_only()),
+                    .with_permissions(McpPermissions::full()),
             )
             .run();
     });
 
-    server.serve(rmcp::transport::stdio()).await?.waiting().await?;
+    let server = AgentBevyMcpServer::new(state).serve(stdio()).await?;
+    server.waiting().await?;
     Ok(())
 }
 ```
 
-### 3. Point your AI agent at it
+`BevyMcpServer` remains available when only the base/legacy surface is desired. `AgentBevyMcpServer` is the normal choice for autonomous-agent workflows.
 
-**Claude Code / Claude Desktop** — add to your MCP settings:
+### 3. Point an MCP client at the game binary
+
+For clients that use an MCP JSON configuration:
 
 ```json
 {
@@ -83,229 +195,144 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-That's it. Your agent now has a live, structured connection to your Bevy ECS.
+The exact configuration file differs by client, but the transport pattern is the same: the MCP client launches the game binary and communicates over stdio.
 
 ---
 
-## How It Works
+## How it works
 
-1. **Your game binary embeds the MCP server.** The `bevy-mcp-host` plugin runs inside your Bevy app; the `bevy-mcp-server` handles the MCP protocol over stdio. Both live in the same process.
-
-2. **The AI agent connects via stdio.** Any MCP-compatible client (Claude Code, Cursor, Claude Desktop, Codex CLI, etc.) launches your game binary as a subprocess and communicates over stdin/stdout.
-
-3. **Requests flow through shared queues.** The server writes commands to an ingress queue; the host plugin reads them during ECS systems and writes results back. No sockets, no serialization over the wire — just in-process `Arc<Mutex<>>`.
-
-4. **Mutations execute at safe boundaries.** ECS write operations are deferred and applied at the next command application point in Bevy's schedule, preventing mid-frame corruption.
-
-5. **Reflection does the heavy lifting.** Every component read/write goes through Bevy's type registry. No manual serialization per component — if it's `Reflect`, it's accessible.
-
----
-
-## Tools Overview
-
-bevy-mcp ships **61 tools** organized into categories. Here's what your agent can do:
-
-### ECS Inspection & Mutation
-Query any entity by component filters, read full component values via reflection, spawn and despawn entities, insert/update/remove components, and manage entity hierarchies — reparent, duplicate, and traverse the full parent-child tree.
-
-**Key tools:** `world_summary` · `entity_query` · `entity_get` · `component_get` · `component_schema` · `entity_spawn` · `entity_despawn` · `component_insert` · `component_update` · `component_remove` · `hierarchy` · `entity_reparent`
-
-### Resources
-List, read, and mutate any registered Bevy resource by type name. Schema introspection included.
-
-**Key tools:** `resource_list` · `resource_get` · `resource_schema` · `resource_update`
-
-### Runtime Control
-Pause and resume the simulation, step frame-by-frame for deterministic debugging, adjust time scale, and manage the full app lifecycle (launch, stop, restart).
-
-**Key tools:** `runtime_pause` · `runtime_resume` · `runtime_step` · `runtime_time_scale`
-
-### Input Injection
-Simulate keyboard, mouse, and gamepad input. Your agent can play the game exactly like a human — or run thousands of automated playthroughs.
-
-**Key tools:** `input_key` · `input_mouse`
-
-### UI Interaction
-Query the UI node tree, inspect element details, click buttons, and type into text fields. Test menus and HUDs without a human in the loop.
-
-**Key tools:** `ui_query` · `ui_inspect`
-
-### Camera & Capture
-List cameras, inspect properties, set transforms, look at targets, frame specific entities, and capture screenshots from any camera — including off-screen render targets.
-
-**Key tools:** `camera_list` · `camera_inspect` · `capture_game` · `capture_camera`
-
-### Assets
-Browse loaded assets, check their status, inspect metadata, and trigger hot-reloads.
-
-**Key tools:** `asset_list` · `asset_get` · `asset_status` · `asset_reload`
-
-### Events & Diagnostics
-Observe captured ECS events, read log output filtered by level, and get real-time diagnostics (FPS, frame time, entity count).
-
-**Key tools:** `observe_events` · `logs` · `diagnostics`
-
-### Build & Playtest
-Run `cargo check`, `build`, and `test` with structured output directly from the agent. Define assertions against game state for automated playtesting.
-
-**Key tools:** `cargo_check` · `cargo_build` · `cargo_test` · `assert`
-
-### Batch Operations
-Execute multiple read operations in a single call, with `dry_run` to preview and `verify` to confirm. Atomic mode ensures all-or-nothing semantics for write batches.
-
-**Key tools:** `batch`
-
----
-
-## Comparison
-
-How bevy-mcp stacks up against AI integration in other engines:
-
-| Capability | bevy-mcp | Unity MCP | Unreal MCP | Godot MCP |
-|---|---|---|---|---|
-| **Architecture** | Embedded in-process | External bridge | External bridge | External bridge |
-| **Component access** | Reflection-based, automatic | Manual serialization | Manual serialization | Manual serialization |
-| **ECS mutation safety** | Deferred commands at schedule boundaries | No built-in guard | No built-in guard | No built-in guard |
-| **Permission system** | 3 levels (Read / Write / Full) | Basic or none | Basic or none | Basic or none |
-| **Tool count** | 61 | ~15-20 | ~15-20 | ~10-15 |
-| **Network overhead** | Zero (in-process queues) | IPC / socket | IPC / socket | IPC / socket |
-| **Input injection** | Keyboard, mouse, gamepad | Limited | Limited | Limited |
-| **Screenshot capture** | Any camera, any render target | Viewport only | Viewport only | Viewport only |
-| **Batch operations** | Atomic, dry-run, verify modes | Not available | Not available | Not available |
-| **Async operation tracking** | Built-in | Not available | Not available | Not available |
-| **License** | MIT / Apache-2.0 | Varies | Varies | Varies |
-
-bevy-mcp's embedded architecture means your agent doesn't talk to a bridge process — it talks directly to the ECS through shared memory. Reflection-based access means you never write per-component serialization code. Deferred commands mean mutations are safe by default.
-
----
-
-## Agent Setup Guides
-
-bevy-mcp works with any MCP-compatible client. Configuration is the same pattern everywhere — point the client at your game binary:
-
-| Agent | Setup | Guide |
-|---|---|---|
-| **Claude Code** | Add to `.mcp.json` or `~/.claude/settings.json` | [Guide](docs/guides/claude-code.md) |
-| **Claude Desktop** | Add to Settings → MCP Servers | [Guide](docs/guides/claude-desktop.md) |
-| **Cursor** | Add to `.cursor/mcp.json` | [Guide](docs/guides/cursor.md) |
-| **Codex CLI** | Add to `~/.codex/config.toml` | [Guide](docs/guides/codex-cli.md) |
-| **Gemini CLI** | Add to `.gemini/settings.json` | [Guide](docs/guides/gemini-cli.md) |
-| **Cline** | Add to `.cline/mcp.json` | [Guide](docs/guides/cline.md) |
-| **Local LLMs** | Ollama / LM Studio via Cline | [Guide](docs/guides/local-llms.md) |
-
-Example for any client:
-
-```json
-{
-  "mcpServers": {
-    "bevy": {
-      "command": "/path/to/your-game-binary",
-      "args": []
-    }
-  }
-}
-```
+1. **Your game embeds `BevyMcpPlugin`.** The host plugin runs inside the Bevy process and owns ECS-facing inspection, mutation, input, debugging, and runtime integration.
+2. **`AgentBevyMcpServer` exposes MCP over stdio.** The external AI/coding agent communicates using normal MCP JSON-RPC.
+3. **Server requests cross an in-process queue boundary.** The MCP server and Bevy host share request/result queues; no engine-side socket bridge is required.
+4. **Mutations are deferred.** ECS writes are applied at safe schedule boundaries instead of mutating the world mid-system.
+5. **Reflection supplies structured state.** Registered reflected components/resources can be inspected, compared, and updated without writing a bespoke serializer for every type.
+6. **Optional agent adapters add semantics.** Games can register semantic actions, typed states, capture targets, checkpoint state, system-access metadata, and timing instrumentation where generic ECS reflection is not enough.
 
 ---
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────┐
-│              MCP Client (AI Agent)                    │
-│         Claude Code · Cursor · Claude Desktop         │
+│                 MCP Client / AI Agent                │
+│        Claude Code · Cursor · Codex · others         │
 └──────────────────────┬───────────────────────────────┘
-                       │ stdio (JSON-RPC)
+                       │ stdio / MCP JSON-RPC
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│              bevy-mcp-server                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────┐  │
-│  │ Tool Router│  │ MCP Proto  │  │ Shared Queues  │  │
-│  │ (61 tools) │  │ (stdio)    │  │ (Arc<Mutex>)   │  │
-│  └────────────┘  └────────────┘  └────────────────┘  │
+│              AgentBevyMcpServer                      │
+│   base tools + advanced tools + debugger/playtests   │
 └──────────────────────┬───────────────────────────────┘
-                       │ in-process queues
+                       │ in-process request/result queues
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│              bevy-mcp-host (Bevy Plugin)              │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────┐  │
-│  │ Ingress    │  │ Deferred   │  │ Reflection     │  │
-│  │ System     │  │ Commands   │  │ ECS Access     │  │
-│  └────────────┘  └────────────┘  └────────────────┘  │
+│              bevy-mcp-host / BevyMcpPlugin           │
+│  reflection · deferred mutation · input · debugger   │
 └──────────────────────┬───────────────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────────────┐
-│                   Bevy ECS World                      │
+│                    Bevy ECS World                    │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Three crates, zero Bevy dependency in two of them:**
+The workspace is split into three crates:
 
-- **`bevy-mcp-core`** — Shared protocol types and queue definitions. No Bevy dependency. Can be used by any tooling that needs to speak the bevy-mcp protocol.
-- **`bevy-mcp-server`** — MCP server implementation over stdio. No Bevy dependency. Handles JSON-RPC routing and tool dispatch.
-- **`bevy-mcp-host`** — The Bevy plugin. Depends on `bevy` and bridges MCP commands into the ECS through deferred commands and reflection.
+- **`bevy-mcp-core`** — shared protocol types, commands, entity handles, queues, and debug/advanced request models; no Bevy dependency.
+- **`bevy-mcp-server`** — MCP routers and stdio-facing server surface; no Bevy dependency.
+- **`bevy-mcp-host`** — the Bevy plugin and runtime integration layer.
 
 ---
 
 ## Permissions
 
-bevy-mcp enforces a permission model at the Bevy ingress boundary. Set it when you configure the plugin:
+bevy-mcp enforces permissions at the host boundary:
 
 ```rust
 use bevy_mcp_host::{BevyMcpPlugin, McpPermissions};
 
-// Read-only: inspect entities, components, resources, events (default)
+// Observation only
 .with_permissions(McpPermissions::read_only())
 
-// Write: everything above + ECS mutation (spawn, insert, update, remove)
+// Observation + ECS/state mutation
 .with_permissions(McpPermissions::write())
 
-// Full: everything above + input injection, runtime control, UI interaction
+// Observation + mutation + runtime/input interaction
 .with_permissions(McpPermissions::full())
 ```
 
-The permission level is enforced server-side — the agent cannot bypass it regardless of what it requests. Use `Read` during development observation, `Write` for automated testing, and `Full` when you want the agent to actually play the game.
+The live `capabilities` response combines implementation status, runtime availability, and permission allowance so an agent can tell the difference between "this tool exists" and "this operation is currently usable".
+
+---
+
+## Agent integration hooks
+
+Reflection covers a large part of Bevy automatically, but some agent workflows benefit from explicit game-level semantics. The host exposes registration APIs for:
+
+- semantic actions (`McpActionRegistry`)
+- typed game states (`McpStateRegistry`)
+- dedicated capture targets (`McpCaptureTargets`)
+- system access metadata (`McpSystemAccessRegistry`)
+- system timing instrumentation (`McpSystemTimings`)
+- deterministic checkpoint state (`McpCheckpointRegistry`)
+
+These adapters let an agent move from generic ECS manipulation toward higher-level operations such as "start mission", "buy upgrade", "enter build mode", or "restore this test state" without hard-coding those concepts into bevy-mcp itself.
+
+---
+
+## Agent setup guides
+
+bevy-mcp uses standard MCP stdio transport, so any compatible client can launch the instrumented game binary. Repository guides are available for common clients:
+
+| Agent | Guide |
+|---|---|
+| **Claude Code** | [docs/guides/claude-code.md](docs/guides/claude-code.md) |
+| **Claude Desktop** | [docs/guides/claude-desktop.md](docs/guides/claude-desktop.md) |
+| **Cursor** | [docs/guides/cursor.md](docs/guides/cursor.md) |
+| **Codex CLI** | [docs/guides/codex-cli.md](docs/guides/codex-cli.md) |
+| **Gemini CLI** | [docs/guides/gemini-cli.md](docs/guides/gemini-cli.md) |
+| **Cline** | [docs/guides/cline.md](docs/guides/cline.md) |
+| **Local LLMs** | [docs/guides/local-llms.md](docs/guides/local-llms.md) |
 
 ---
 
 ## FAQ
 
-### Does the agent need to be running before I start my game?
+### Is bevy-mcp an external editor bridge?
 
-Yes. bevy-mcp is embedded in your game binary — the agent launches your game as a subprocess and communicates over stdio. Your game doesn't run standalone and then "connect" to an external MCP server. The MCP server *is* your game.
+No. The MCP client is external, but the Bevy-facing host runs inside the game process. The stdio server forwards requests to the host through shared in-process queues.
 
-### Will this slow down my game?
+### Does every tool work in every game?
 
-Negligibly. Read operations are simple ECS queries with reflection. Write operations are deferred and batched at schedule boundaries. The MCP server runs on a separate thread. In practice, the overhead is comparable to having a debug inspector open.
+No. Some operations require a renderer, picking, gamepad resources, registered semantic actions/states, checkpoint adapters, or a higher permission level. Call `capabilities` to discover the live contract instead of assuming availability.
 
-### Do I need to write serialization code for my components?
+### Do I need custom serialization for reflected components?
 
-No. If your component implements `Reflect` (which most Bevy components do), bevy-mcp can read and write it automatically through the type registry. No per-component bridge code needed.
+Usually not. Registered `Reflect` data can be inspected and mutated through Bevy's type registry. Game-specific semantic behavior can be layered on with explicit agent adapters when reflection alone is too low-level.
 
-### Can the agent break my game?
+### Can the agent interact with the running game instead of only editing ECS state?
 
-Only if you let it. The `Read` permission level is completely safe — observation only. `Write` allows ECS mutation but not input injection. `Full` gives the agent keyboard/mouse/gamepad control. Start with `Read` and escalate as needed.
+Yes. The software pointer, native picking pipeline, UI interaction tools, keyboard/gamepad input, camera controls, viewport capture, watchpoints, assertions, and frame-driven playtests are intended to support that loop.
 
-### What happens if the agent sends a bad mutation?
+### Can bevy-mcp run Cargo builds and tests for the agent?
 
-Deferred commands are validated before application. Invalid component data, missing entities, or type mismatches return structured errors to the agent — they don't crash your game. The permission system adds another layer of protection.
+Not from the embedded MCP server today. The build/check/test tools intentionally return `BUILD_NOT_AVAILABLE`; run those commands from a trusted development shell or coding harness.
 
-### Does this work with hot-reloading?
+### Is checkpoint/replay a full snapshot of the entire Bevy world?
 
-Asset hot-reload works through Bevy's standard `asset_reload` tool. Code hot-reloading (via `bevy-inspector-egui` style approaches) is orthogonal — bevy-mcp doesn't interfere with it.
+No. Deterministic checkpoints restore explicitly registered checkpoint state. This keeps the contract truthful and avoids pretending arbitrary engine/plugin state can always be cloned safely.
 
-### Can I use this in production builds?
+### Should this ship in production builds?
 
-bevy-mcp is designed for development and testing workflows. You'd typically gate the `BevyMcpPlugin` behind a feature flag and exclude it from release builds. The permission system provides safety, but an open MCP endpoint in a shipped game is not recommended.
+bevy-mcp is primarily a development, testing, and agent-automation tool. Gate the plugin behind an appropriate feature/build configuration and do not expose an unrestricted development-control surface in a shipped game.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Whether it's a bug report, a new tool, or documentation improvement — open an issue or submit a pull request.
+Contributions are welcome. Bug reports, runtime integrations, new tools, tests, and documentation improvements are all useful.
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development setup, testing, and code style.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code-style guidance.
 
 ---
 
