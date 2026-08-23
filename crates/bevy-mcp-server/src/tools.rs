@@ -1188,21 +1188,27 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Reserved: asset metadata inspection is not implemented yet.")]
+    #[tool(
+        description = "Inspect a known asset path, including active asset IDs, runtime type information, and load/dependency states."
+    )]
     async fn asset_get(&self, Parameters(params): Parameters<AssetGetParams>) -> String {
         self.state
             .call(McpCommand::AssetGet { path: params.path })
             .await
     }
 
-    #[tool(description = "Reserved: asset loading-status inspection is not implemented yet.")]
+    #[tool(
+        description = "Get root, direct-dependency, and recursive-dependency load state for a known asset path."
+    )]
     async fn asset_status(&self, Parameters(params): Parameters<AssetStatusParams>) -> String {
         self.state
             .call(McpCommand::AssetStatus { path: params.path })
             .await
     }
 
-    #[tool(description = "Reserved: asset reload is not implemented yet.")]
+    #[tool(
+        description = "Queue a reload for an active loaded asset path. Requires runtime-control permission."
+    )]
     async fn asset_reload(&self, Parameters(params): Parameters<AssetReloadParams>) -> String {
         self.state
             .call(McpCommand::AssetReload { path: params.path })
