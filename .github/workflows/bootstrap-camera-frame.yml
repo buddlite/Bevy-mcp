@@ -39,8 +39,8 @@ jobs:
           path = Path("crates/bevy-mcp-host/tests/interaction.rs")
           text = path.read_text(encoding="utf-8")
           needle = "                far: 1000.0,\n            }),"
-          if text.count(needle) != 3:
-              raise RuntimeError(f"expected 3 perspective test projections, found {text.count(needle)}")
+          if text.count(needle) != 2:
+              raise RuntimeError(f"expected 2 perspective test projections, found {text.count(needle)}")
           text = text.replace(
               needle,
               "                far: 1000.0,\n                ..default()\n            }),",
