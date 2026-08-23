@@ -36,16 +36,36 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+
           path = Path("crates/bevy-mcp-host/tests/interaction.rs")
-          text = path.read_text(encoding="utf-8")
-          needle = "                far: 1000.0,\n            }),"
-          if text.count(needle) != 2:
-              raise RuntimeError(f"expected 2 perspective test projections, found {text.count(needle)}")
-          text = text.replace(
-              needle,
-              "                far: 1000.0,\n                ..default()\n            }),",
-          )
-          path.write_text(text, encoding="utf-8")
+          lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+          output = []
+          in_perspective = False
+          has_required_default = False
+          patched = 0
+
+          for line in lines:
+              if "bevy::camera::PerspectiveProjection {" in line:
+                  in_perspective = True
+                  has_required_default = False
+
+              if in_perspective and ("..default()" in line or "near_clip_plane:" in line):
+                  has_required_default = True
+
+              if in_perspective and line.strip() == "}),":
+                  if not has_required_default:
+                      indent = line[: len(line) - len(line.lstrip())]
+                      output.append(f"{indent}    ..default()\n")
+                      patched += 1
+                  in_perspective = False
+
+              output.append(line)
+
+          if patched == 0:
+              raise RuntimeError("expected at least one PerspectiveProjection initializer to patch")
+
+          path.write_text("".join(output), encoding="utf-8")
+          print(f"patched {patched} PerspectiveProjection initializer(s)")
           PY
       - name: Format workspace
         run: cargo fmt --all
