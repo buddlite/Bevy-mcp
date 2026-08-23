@@ -15,7 +15,7 @@ This distinction prevents misleading results. For example, viewport capture is i
 
 The response also includes a `deprecations` array. Legacy `capture_game` and `capture_camera` remain functional aliases for `capture_viewport`, while the old `playtest_run` surface is explicitly unavailable and points agents to the frame-driven `playtest_start`/`playtest_status` debugger API.
 
-Known interaction surfaces reserved for the next Agent Interaction work—mouse motion, UI click/type, camera framing/transform/look-at—report `implemented: false` instead of being advertised as working. Asset inspection/reload and embedded cargo build/test surfaces likewise report false.
+Native pointer motion/picking, UI click/type, and camera framing/transform/look-at are implemented by the Agent Interaction layer; their `available`, `allowed`, and `operational` fields still reflect the live app and permission state. Asset inspection/reload and embedded cargo build/test surfaces remain unimplemented and report false.
 
 `resource_writers` and `component_writers` use the selected API kind to choose the exact registered access list. Resource-writer discovery therefore continues to work when a registered resource type currently has no live resource instance.
 

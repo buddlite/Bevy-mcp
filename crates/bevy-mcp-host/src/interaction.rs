@@ -141,6 +141,13 @@ fn primary_location(world: &World, x: f64, y: f64) -> Result<Location, McpResult
     })
 }
 
+fn logical_ui_center(
+    transform: &bevy::ui::UiGlobalTransform,
+    computed: &bevy::ui::ComputedNode,
+) -> Vec2 {
+    transform.transform_point2(Vec2::ZERO) * computed.inverse_scale_factor()
+}
+
 fn ui_location(world: &World, entity: Entity) -> Result<Location, McpResult> {
     picking_available(world)?;
     let transform = world
@@ -151,7 +158,13 @@ fn ui_location(world: &World, entity: Entity) -> Result<Location, McpResult> {
                 "UI entity has no UiGlobalTransform; wait for UI layout to run",
             )
         })?;
-    let position = transform.transform_point2(Vec2::ZERO);
+    let computed = world.get::<bevy::ui::ComputedNode>(entity).ok_or_else(|| {
+        McpResult::error(
+            "UI_LAYOUT_NOT_READY",
+            "UI entity has no ComputedNode; wait for UI layout to run",
+        )
+    })?;
+    let position = logical_ui_center(transform, computed);
 
     let primary = world
         .iter_entities()
@@ -647,4 +660,21 @@ pub fn pointer_available(world: &World) -> bool {
         && world
             .iter_entities()
             .any(|entity| entity.contains::<PrimaryWindow>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_center_converts_physical_layout_to_logical_pointer_coordinates() {
+        let transform = bevy::ui::UiGlobalTransform::from_xy(240.0, 160.0);
+        let mut computed = bevy::ui::ComputedNode::default();
+        computed.inverse_scale_factor = 0.5;
+
+        assert_eq!(
+            logical_ui_center(&transform, &computed),
+            Vec2::new(120.0, 80.0)
+        );
+    }
 }

@@ -17,7 +17,7 @@ A single persistent MCP pointer is intentionally serialized: pointer press/drag 
 
 ## UI
 
-`ui_click(entity)` computes the UI node's center, moves the software pointer there, verifies that the requested node or one of its descendants is actually among Bevy's resolved picks, then sends native press/release input. This preserves Bevy event bubbling while preventing a click from silently landing on an unrelated entity.
+`ui_click(entity)` computes the UI node's center, converts Bevy UI's physical-pixel layout coordinates to logical pointer coordinates using the node's inverse scale factor, moves the software pointer there, verifies that the requested node or one of its descendants is actually among Bevy's resolved picks, then sends native press/release input. This preserves Bevy event bubbling, works correctly with HiDPI/window scaling, and prevents a click from silently landing on an unrelated entity.
 
 `ui_type(entity, text)` requires Bevy's `EditableText` and queues `TextEdit::Insert`, allowing Bevy's normal text-edit system to apply Unicode-aware edits.
 
