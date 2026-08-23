@@ -35,8 +35,17 @@ fn capabilities_are_live_and_permission_aware() {
     assert_eq!(capabilities["permissions"]["level"], "read");
     assert_eq!(capabilities["runtime"]["pause"]["implemented"], true);
     assert_eq!(capabilities["runtime"]["pause"]["allowed"], false);
-    assert_eq!(capabilities["ui"]["click"]["implemented"], false);
-    assert_eq!(capabilities["input"]["mouse_move"]["implemented"], false);
+
+    for capability in [
+        &capabilities["ui"]["click"],
+        &capabilities["input"]["mouse_move"],
+    ] {
+        assert_eq!(capability["implemented"], true);
+        assert_eq!(capability["available"], false);
+        assert_eq!(capability["allowed"], false);
+        assert_eq!(capability["operational"], false);
+    }
+
     assert_eq!(capabilities["capture"]["viewport"]["implemented"], true);
     assert_eq!(capabilities["capture"]["viewport"]["available"], false);
     assert_eq!(capabilities["debugger"]["watchpoints"]["implemented"], true);

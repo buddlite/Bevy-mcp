@@ -10,6 +10,7 @@ use crate::checkpoint::{McpCheckpointRegistry, McpCheckpointStore, McpRecorder};
 use crate::debugger::{self, McpDebugger};
 use crate::deferred::DeferredMcpCommands;
 use crate::event_capture::EventCapture;
+use crate::interaction::{self, McpInteractionState, mcp_pointer_id};
 use crate::log_capture::LogCapture;
 use crate::operations::OperationTracker;
 use crate::permissions::McpPermissions;
@@ -124,6 +125,11 @@ impl Plugin for BevyMcpPlugin {
         app.init_resource::<McpCheckpointStore>();
         app.init_resource::<McpRecorder>();
         app.init_resource::<McpDebugger>();
+        app.init_resource::<McpInteractionState>();
+        let pointer_entity = app.world_mut().spawn(mcp_pointer_id()).id();
+        app.world_mut()
+            .resource_mut::<McpInteractionState>()
+            .set_pointer_entity(pointer_entity);
 
         app.add_systems(
             PreUpdate,
@@ -137,6 +143,16 @@ impl Plugin for BevyMcpPlugin {
                     .in_set(McpSet::Ingress),
                 systems::ingress_system.in_set(McpSet::Ingress),
                 systems::runtime_system.in_set(McpSet::Apply),
+            ),
+        );
+
+        app.add_systems(
+            PreUpdate,
+            (
+                interaction::interaction_input_system
+                    .after(McpSet::Ingress)
+                    .before(bevy::picking::PickingSystems::ProcessInput),
+                interaction::interaction_result_system.after(bevy::picking::PickingSystems::Last),
             ),
         );
 

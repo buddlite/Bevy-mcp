@@ -189,6 +189,44 @@ pub struct InputMouseParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PointerPointParams {
+    #[schemars(description = "Primary-window X coordinate in logical pixels")]
+    pub x: f64,
+    #[schemars(description = "Primary-window Y coordinate in logical pixels")]
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PointerClickParams {
+    pub x: f64,
+    pub y: f64,
+    #[schemars(description = "Pointer button: left/primary, right/secondary, or middle")]
+    pub button: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PointerDragParams {
+    pub from_x: f64,
+    pub from_y: f64,
+    pub to_x: f64,
+    pub to_y: f64,
+    #[schemars(description = "Pointer button: left/primary, right/secondary, or middle")]
+    pub button: Option<String>,
+    #[schemars(
+        description = "Interpolated move frames between start and end (default 8, max 120)"
+    )]
+    pub steps: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PointerScrollParams {
+    pub x: f64,
+    pub y: f64,
+    pub delta_x: Option<f64>,
+    pub delta_y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InputActionParams {
     #[schemars(description = "Action name (e.g. 'move_forward', 'fire')")]
     pub action: String,
@@ -606,7 +644,7 @@ impl BevyMcpServer {
     }
 
     #[tool(
-        description = "Reserved for the Agent Interaction subsystem; UI click injection is not implemented yet."
+        description = "Click a UI node at its computed center through Bevy's native picking pipeline; fails rather than clicking another target if the requested node is not picked."
     )]
     async fn ui_click(&self, Parameters(params): Parameters<UiClickParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
@@ -616,9 +654,7 @@ impl BevyMcpServer {
         self.state.call(McpCommand::UiClick { entity }).await
     }
 
-    #[tool(
-        description = "Reserved for the Agent Interaction subsystem; UI text injection is not implemented yet."
-    )]
+    #[tool(description = "Queue native Bevy TextEdit insertion into an EditableText component.")]
     async fn ui_type(&self, Parameters(params): Parameters<UiTypeParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
@@ -972,7 +1008,7 @@ impl BevyMcpServer {
     }
 
     #[tool(
-        description = "Inject a mouse button event. The motion variant is reserved for Agent Interaction and currently returns NOT_IMPLEMENTED."
+        description = "Inject a native Bevy pointer move or button event through the MCP software pointer."
     )]
     async fn input_mouse(&self, Parameters(params): Parameters<InputMouseParams>) -> String {
         match params.event.as_str() {
@@ -988,6 +1024,73 @@ impl BevyMcpServer {
             }).await,
             _ => serde_json::json!({"error": "INVALID_PARAMS", "message": "event must be 'motion' or 'button'"}).to_string(),
         }
+    }
+
+    #[tool(
+        description = "Move the MCP software pointer and return ordered Bevy picking hits at primary-window coordinates."
+    )]
+    async fn pick_at(&self, Parameters(params): Parameters<PointerPointParams>) -> String {
+        self.state
+            .call(McpCommand::PickAt {
+                x: params.x,
+                y: params.y,
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Move the MCP software pointer through Bevy's native picking input pipeline."
+    )]
+    async fn pointer_move(&self, Parameters(params): Parameters<PointerPointParams>) -> String {
+        self.state
+            .call(McpCommand::InputMouseMove {
+                x: params.x,
+                y: params.y,
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Click primary-window coordinates through Bevy's native pointer/picking event pipeline."
+    )]
+    async fn pointer_click(&self, Parameters(params): Parameters<PointerClickParams>) -> String {
+        self.state
+            .call(McpCommand::PointerClick {
+                x: params.x,
+                y: params.y,
+                button: params.button.unwrap_or_else(|| "left".into()),
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Drag between primary-window coordinates through native Bevy pointer press/move/release events."
+    )]
+    async fn pointer_drag(&self, Parameters(params): Parameters<PointerDragParams>) -> String {
+        self.state
+            .call(McpCommand::PointerDrag {
+                from_x: params.from_x,
+                from_y: params.from_y,
+                to_x: params.to_x,
+                to_y: params.to_y,
+                button: params.button.unwrap_or_else(|| "left".into()),
+                steps: params.steps.unwrap_or(8).clamp(1, 120),
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Scroll at primary-window coordinates through Bevy's native pointer event pipeline."
+    )]
+    async fn pointer_scroll(&self, Parameters(params): Parameters<PointerScrollParams>) -> String {
+        self.state
+            .call(McpCommand::PointerScroll {
+                x: params.x,
+                y: params.y,
+                delta_x: params.delta_x.unwrap_or(0.0),
+                delta_y: params.delta_y,
+            })
+            .await
     }
 
     #[tool(
@@ -1164,7 +1267,9 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(description = "Reserved for Agent Interaction: camera framing is not implemented yet.")]
+    #[tool(
+        description = "Frame an entity with the active camera while preserving the current camera-target distance."
+    )]
     async fn camera_frame_entity(
         &self,
         Parameters(params): Parameters<CameraFrameParams>,
@@ -1183,9 +1288,7 @@ impl BevyMcpServer {
         self.state.call(McpCommand::CameraInspect).await
     }
 
-    #[tool(
-        description = "Reserved for Agent Interaction: camera transform control is not implemented yet."
-    )]
+    #[tool(description = "Set the active camera position.")]
     async fn camera_set_transform(
         &self,
         Parameters(params): Parameters<CameraSetTransformParams>,
@@ -1199,9 +1302,7 @@ impl BevyMcpServer {
             .await
     }
 
-    #[tool(
-        description = "Reserved for Agent Interaction: camera look-at control is not implemented yet."
-    )]
+    #[tool(description = "Rotate the active camera to look at an entity.")]
     async fn camera_look_at(&self, Parameters(params): Parameters<CameraLookAtParams>) -> String {
         let entity = match parse_entity_handle(&params.entity) {
             Ok(handle) => handle,
