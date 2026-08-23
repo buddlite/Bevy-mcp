@@ -32,6 +32,21 @@ jobs:
             libxkbcommon-dev
       - name: Apply source transformation
         run: python .github/bootstrap_camera_frame.py
+      - name: Apply Bevy 0.19 projection defaults
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("crates/bevy-mcp-host/tests/interaction.rs")
+          text = path.read_text(encoding="utf-8")
+          needle = "                far: 1000.0,\n            }),"
+          if text.count(needle) != 3:
+              raise RuntimeError(f"expected 3 perspective test projections, found {text.count(needle)}")
+          text = text.replace(
+              needle,
+              "                far: 1000.0,\n                ..default()\n            }),",
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
       - name: Format workspace
         run: cargo fmt --all
       - name: Check workspace
