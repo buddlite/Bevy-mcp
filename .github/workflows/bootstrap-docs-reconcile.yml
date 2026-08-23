@@ -22,6 +22,14 @@ jobs:
           ref: docs/reconcile-onboarding
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
       - name: Fix bootstrap self-checks
         run: |
           sed -i '/assert "cargo tools" not in read("CHANGELOG.md").lower()/d' .github/bootstrap_docs_reconcile.py
