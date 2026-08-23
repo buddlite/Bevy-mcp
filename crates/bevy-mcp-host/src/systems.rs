@@ -7,7 +7,7 @@ use crate::entity_handle::{entity_to_uri, resolve_entity, resolve_entity_by_inde
 use crate::permissions::{McpPermissions, PermissionLevel};
 use crate::queue::{McpIngressQueue, McpResultQueue};
 use crate::registry::McpRegistry;
-use bevy_mcp_core::command::{McpCommand, McpResponse, McpResult};
+use bevy_mcp_core::command::{McpCommand, McpResponse, McpResult, MutationOperation};
 
 fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
     match command {
@@ -17,6 +17,7 @@ fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
         | McpCommand::ComponentInsert { .. }
         | McpCommand::ComponentUpdate { .. }
         | McpCommand::ComponentRemove { .. }
+        | McpCommand::AtomicMutationBatch { .. }
         | McpCommand::ResourceUpdate { .. }
         | McpCommand::ResourceInsert { .. }
         | McpCommand::ResourceRemove { .. }
@@ -182,6 +183,18 @@ pub fn ingress_system(world: &mut World) {
                         ),
                     });
                 }
+            }
+            McpCommand::AtomicMutationBatch {
+                operations,
+                dry_run,
+            } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::AtomicMutationBatch {
+                        operations: operations.clone(),
+                        dry_run: *dry_run,
+                        result_id: entry.request_id,
+                    },
+                );
             }
             McpCommand::InputKey { key, pressed } => {
                 world.resource_mut::<DeferredMcpCommands>().pending.push(
@@ -441,6 +454,17 @@ pub fn deferred_apply_system(world: &mut World) {
                     result,
                 });
             }
+            DeferredCommand::AtomicMutationBatch {
+                operations,
+                dry_run,
+                result_id,
+            } => {
+                let result = apply_atomic_mutation_batch(world, &operations, dry_run);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
             DeferredCommand::InputKey {
                 key,
                 pressed,
@@ -695,6 +719,310 @@ pub fn deferred_apply_system(world: &mut World) {
     }
 }
 
+fn mutation_operation_name(operation: &MutationOperation) -> &'static str {
+    match operation {
+        MutationOperation::ComponentInsert { .. } => "component_insert",
+        MutationOperation::ComponentUpdate { .. } => "component_update",
+        MutationOperation::ComponentRemove { .. } => "component_remove",
+        MutationOperation::ResourceUpdate { .. } => "resource_update",
+    }
+}
+
+fn transaction_validation_error(
+    index: usize,
+    operation: &MutationOperation,
+    error: McpResult,
+) -> McpResult {
+    match error {
+        McpResult::Error { code, message } => McpResult::error(
+            "TRANSACTION_VALIDATION_FAILED",
+            format!(
+                "Operation {index} ({}) failed validation [{code}]: {message}",
+                mutation_operation_name(operation)
+            ),
+        ),
+        McpResult::Success(_) => McpResult::error(
+            "TRANSACTION_VALIDATION_FAILED",
+            format!(
+                "Operation {index} ({}) returned an invalid validation result",
+                mutation_operation_name(operation)
+            ),
+        ),
+    }
+}
+
+fn validate_component_write(
+    world: &World,
+    entity_handle: &bevy_mcp_core::entity_handle::EntityHandle,
+    component: &str,
+    value: &Value,
+) -> Result<(), McpResult> {
+    if resolve_entity(world, entity_handle).is_none() {
+        return Err(McpResult::error(
+            "ENTITY_NOT_FOUND",
+            format!("Entity {entity_handle} not found"),
+        ));
+    }
+
+    let app_registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = app_registry.read();
+    let registration = registry
+        .iter()
+        .find(|registration| registration.type_info().type_path_table().short_path() == component)
+        .ok_or_else(|| {
+            McpResult::error(
+                "COMPONENT_NOT_REGISTERED",
+                format!("Component '{component}' is not registered in the type registry"),
+            )
+        })?;
+
+    if registration
+        .data::<bevy::ecs::reflect::ReflectComponent>()
+        .is_none()
+    {
+        return Err(McpResult::error(
+            "COMPONENT_NOT_REFLECTED",
+            format!("Component '{component}' does not have ReflectComponent data"),
+        ));
+    }
+
+    let type_path = registration.type_info().type_path_table().path();
+    let wrapped = json!({ type_path: value });
+    let json = wrapped.to_string();
+    let mut deserializer = serde_json::Deserializer::from_str(&json);
+    let reflect_deserializer = bevy::reflect::serde::ReflectDeserializer::new(&registry);
+    reflect_deserializer
+        .deserialize(&mut deserializer)
+        .map_err(|error| {
+            McpResult::error(
+                "DESERIALIZATION_ERROR",
+                format!("Failed to deserialize '{component}': {error}"),
+            )
+        })?;
+
+    Ok(())
+}
+
+fn validate_component_remove(
+    world: &World,
+    entity_handle: &bevy_mcp_core::entity_handle::EntityHandle,
+    component: &str,
+) -> Result<(), McpResult> {
+    if resolve_entity(world, entity_handle).is_none() {
+        return Err(McpResult::error(
+            "ENTITY_NOT_FOUND",
+            format!("Entity {entity_handle} not found"),
+        ));
+    }
+
+    let app_registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = app_registry.read();
+    let registration = registry
+        .iter()
+        .find(|registration| registration.type_info().type_path_table().short_path() == component)
+        .ok_or_else(|| {
+            McpResult::error(
+                "COMPONENT_NOT_REGISTERED",
+                format!("Component '{component}' is not registered in the type registry"),
+            )
+        })?;
+
+    if registration
+        .data::<bevy::ecs::reflect::ReflectComponent>()
+        .is_none()
+    {
+        return Err(McpResult::error(
+            "COMPONENT_NOT_REFLECTED",
+            format!("Component '{component}' does not have ReflectComponent data"),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_resource_write(world: &World, resource: &str, value: &Value) -> Result<(), McpResult> {
+    let app_registry = world.resource::<AppTypeRegistry>().clone();
+    let registry = app_registry.read();
+    let registration = registry
+        .iter()
+        .find(|registration| registration.type_info().type_path_table().short_path() == resource)
+        .ok_or_else(|| {
+            McpResult::error(
+                "RESOURCE_NOT_REGISTERED",
+                format!("Resource '{resource}' is not registered in the type registry"),
+            )
+        })?;
+
+    if registration
+        .data::<bevy::reflect::ReflectFromPtr>()
+        .is_none()
+    {
+        return Err(McpResult::error(
+            "RESOURCE_NOT_REFLECTED",
+            format!("Resource '{resource}' does not have ReflectFromPtr data"),
+        ));
+    }
+
+    if world.components().get_id(registration.type_id()).is_none() {
+        return Err(McpResult::error(
+            "RESOURCE_NOT_PRESENT",
+            format!("Resource '{resource}' is not registered as a component"),
+        ));
+    }
+
+    let type_id = registration.type_id();
+    if !world
+        .iter_resources()
+        .any(|(info, _)| info.type_id() == Some(type_id))
+    {
+        return Err(McpResult::error(
+            "RESOURCE_NOT_PRESENT",
+            format!("Resource '{resource}' is not present in the world"),
+        ));
+    }
+
+    let type_path = registration.type_info().type_path_table().path();
+    let wrapped = json!({ type_path: value });
+    let json = wrapped.to_string();
+    let mut deserializer = serde_json::Deserializer::from_str(&json);
+    let reflect_deserializer = bevy::reflect::serde::ReflectDeserializer::new(&registry);
+    reflect_deserializer
+        .deserialize(&mut deserializer)
+        .map_err(|error| {
+            McpResult::error(
+                "DESERIALIZATION_ERROR",
+                format!("Failed to deserialize resource '{resource}': {error}"),
+            )
+        })?;
+
+    Ok(())
+}
+
+fn apply_atomic_mutation_batch(
+    world: &mut World,
+    operations: &[MutationOperation],
+    dry_run: bool,
+) -> McpResult {
+    if operations.is_empty() {
+        return McpResult::error(
+            "EMPTY_TRANSACTION",
+            "Atomic mutation batches require at least one operation",
+        );
+    }
+    if operations.len() > 256 {
+        return McpResult::error(
+            "TRANSACTION_TOO_LARGE",
+            "Atomic mutation batches are limited to 256 operations",
+        );
+    }
+
+    // Validate the entire transaction against one exclusive World snapshot before
+    // applying the first mutation. Supported operations do not despawn entities,
+    // change the type registry, or advance the schedule, so successful validation
+    // makes the commit phase deterministic within this exclusive system call.
+    for (index, operation) in operations.iter().enumerate() {
+        let validation = match operation {
+            MutationOperation::ComponentInsert {
+                entity,
+                component,
+                value,
+            }
+            | MutationOperation::ComponentUpdate {
+                entity,
+                component,
+                value,
+            } => validate_component_write(world, entity, component, value),
+            MutationOperation::ComponentRemove { entity, component } => {
+                validate_component_remove(world, entity, component)
+            }
+            MutationOperation::ResourceUpdate { resource, value } => {
+                validate_resource_write(world, resource, value)
+            }
+        };
+
+        if let Err(error) = validation {
+            return transaction_validation_error(index, operation, error);
+        }
+    }
+
+    if dry_run {
+        return McpResult::success(json!({
+            "mode": "atomic_dry_run",
+            "validated": true,
+            "committed": false,
+            "operation_count": operations.len(),
+            "operations": operations
+                .iter()
+                .enumerate()
+                .map(|(index, operation)| json!({
+                    "index": index,
+                    "operation": mutation_operation_name(operation),
+                }))
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    let mut applied = Vec::with_capacity(operations.len());
+    for (index, operation) in operations.iter().enumerate() {
+        let result = match operation {
+            MutationOperation::ComponentInsert {
+                entity,
+                component,
+                value,
+            }
+            | MutationOperation::ComponentUpdate {
+                entity,
+                component,
+                value,
+            } => {
+                let Some(entity) = resolve_entity(world, entity) else {
+                    return McpResult::error(
+                        "TRANSACTION_COMMIT_INVARIANT_FAILED",
+                        format!("Validated entity disappeared before operation {index}"),
+                    );
+                };
+                insert_component_by_reflect(world, entity, component, value)
+            }
+            MutationOperation::ComponentRemove { entity, component } => {
+                let Some(entity) = resolve_entity(world, entity) else {
+                    return McpResult::error(
+                        "TRANSACTION_COMMIT_INVARIANT_FAILED",
+                        format!("Validated entity disappeared before operation {index}"),
+                    );
+                };
+                remove_component_by_reflect(world, entity, component)
+            }
+            MutationOperation::ResourceUpdate { resource, value } => {
+                resource_update(world, resource, value)
+            }
+        };
+
+        match result {
+            McpResult::Success(_) => applied.push(json!({
+                "index": index,
+                "operation": mutation_operation_name(operation),
+            })),
+            McpResult::Error { code, message } => {
+                return McpResult::error(
+                    "TRANSACTION_COMMIT_INVARIANT_FAILED",
+                    format!(
+                        "Prevalidated operation {index} ({}) unexpectedly failed [{code}]: {message}",
+                        mutation_operation_name(operation)
+                    ),
+                );
+            }
+        }
+    }
+
+    McpResult::success(json!({
+        "mode": "atomic",
+        "validated": true,
+        "committed": true,
+        "operation_count": operations.len(),
+        "operations": applied,
+    }))
+}
+
 fn insert_component_by_reflect(
     world: &mut World,
     entity: Entity,
@@ -881,6 +1209,9 @@ fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegist
         } => component_update(world, entity, component, value),
         McpCommand::ComponentRemove { entity, component } => {
             component_remove(world, entity, component)
+        }
+        McpCommand::AtomicMutationBatch { .. } => {
+            McpResult::error("INTERNAL", "Atomic mutation batches should be deferred")
         }
         McpCommand::RuntimePause => runtime_pause(registry),
         McpCommand::RuntimeResume => runtime_resume(registry),
@@ -1076,6 +1407,7 @@ fn capabilities(world: &World) -> McpResult {
             "hierarchy": capability(true, true, can_read),
             "reflection": capability(true, reflected_types_available, can_read),
             "mutate": capability(true, reflected_types_available, can_mutate),
+            "atomic_mutation_batch": capability(true, reflected_types_available, can_mutate),
             "entity_duplicate": capability(false, false, false),
         },
         "runtime": {
