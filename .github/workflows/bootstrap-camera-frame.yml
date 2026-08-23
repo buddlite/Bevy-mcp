@@ -1,0 +1,56 @@
+name: Bootstrap camera framing
+
+on:
+  push:
+    branches:
+      - agent/bounds-aware-camera-frame
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-camera-frame
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/bounds-aware-camera-frame
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply source transformation
+        run: python .github/bootstrap_camera_frame.py
+      - name: Format workspace
+        run: cargo fmt --all
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace
+      - name: Commit validated implementation
+        run: |
+          rm .github/bootstrap_camera_frame.py .github/workflows/bootstrap-camera-frame.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            crates/bevy-mcp-core/src/command.rs \
+            crates/bevy-mcp-host/src/deferred.rs \
+            crates/bevy-mcp-host/src/systems.rs \
+            crates/bevy-mcp-host/tests/interaction.rs \
+            crates/bevy-mcp-server/src/tools.rs \
+            .github/bootstrap_camera_frame.py \
+            .github/workflows/bootstrap-camera-frame.yml
+          git diff --cached --check
+          git commit -m "Add bounds-aware camera framing"
+          git push origin HEAD:agent/bounds-aware-camera-frame
