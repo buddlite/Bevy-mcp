@@ -2,6 +2,8 @@
 
 Setup guides, API reference, and workflows for using bevy-mcp with AI agents.
 
+> `v.01` is the active development branch and may be ahead of published crates. Follow the root Quick Start for matching dependency instructions.
+
 ---
 
 ## Agent Setup Guides
@@ -52,6 +54,7 @@ There is no separate server process. The MCP server is embedded in your game bin
 
 ## Quick Links
 
+- [Agent adapter checklist](agent-adapter.md) — register semantic actions, typed state, checkpoint resources, and exact system-access metadata
 - [Main README](../README.md) — Overview, tools list, architecture
 - [Quick Start](../QUICKSTART.md) — Minimal setup
 - [Contributing](../CONTRIBUTING.md) — Development setup and guidelines
