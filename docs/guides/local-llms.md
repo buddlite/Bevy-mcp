@@ -2,6 +2,8 @@
 
 Run bevy-mcp with a local model — no API key, no cloud costs, fully offline.
 
+> This guide targets the current `v.01` development surface. Follow the root Quick Start for matching source dependencies and `AgentBevyMcpServer` integration before configuring a local-model client.
+
 ---
 
 ## Why Use Local Models?

@@ -8,11 +8,12 @@ Inspect the ECS, mutate reflected state, interact through Bevy's native input an
 run assertions and agent playtests, capture runtime evidence, and debug what changed — all through the
 [Model Context Protocol](https://modelcontextprotocol.io/).
 
-[![Crates.io](https://img.shields.io/crates/v/bevy-mcp-host)](https://crates.io/crates/bevy-mcp-host)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Bevy](https://img.shields.io/badge/Bevy-0.19-orange.svg)](https://bevyengine.org/)
 
 </div>
+
+> **Development status:** `v.01` is the active development branch and may be ahead of published crates. The examples below use matching source dependencies so the documented tool surface and the code you run stay aligned.
 
 ---
 
@@ -143,7 +144,7 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-Use matching published crate versions when consuming releases from crates.io.
+For the current `v.01` development surface, use a source checkout or matching git dependencies. Use crates.io only when a tagged release explicitly documents the same capability set.
 
 ### 2. Embed the full agent server
 
@@ -279,6 +280,8 @@ Reflection covers a large part of Bevy automatically, but some agent workflows b
 - deterministic checkpoint state (`McpCheckpointRegistry`)
 
 These adapters let an agent move from generic ECS manipulation toward higher-level operations such as "start mission", "buy upgrade", "enter build mode", or "restore this test state" without hard-coding those concepts into bevy-mcp itself.
+
+See the [agent adapter checklist](docs/agent-adapter.md) for one minimal example that registers an action, typed state, checkpoint resource, and system-access specification together.
 
 ---
 

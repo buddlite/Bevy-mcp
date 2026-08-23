@@ -2,6 +2,8 @@
 
 Connect [Claude Desktop](https://claude.ai/download) to your live Bevy game for ECS inspection, mutation, and runtime control — all from the desktop app.
 
+> This guide targets the current `v.01` development surface. Use `AgentBevyMcpServer` for the full base + advanced + debugger/playtest router; call `capabilities` to discover what is available and permitted at runtime.
+
 ---
 
 ## What You'll Need
@@ -19,8 +21,15 @@ In your `Cargo.toml`:
 ```toml
 [dependencies]
 bevy = "0.19"
-bevy-mcp-host = "0.1"
+bevy-mcp-core = { path = "../Bevy-mcp/crates/bevy-mcp-core" }
+bevy-mcp-host = { path = "../Bevy-mcp/crates/bevy-mcp-host" }
+bevy-mcp-server = { path = "../Bevy-mcp/crates/bevy-mcp-server" }
+rmcp = { version = "3", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
 ```
+
+> These examples target the current `v.01` source tree. Keep all three bevy-mcp crates on the same source/release version.
 
 ---
 
@@ -32,13 +41,15 @@ In your `main.rs`:
 use bevy::prelude::*;
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use bevy_mcp_host::{BevyMcpPlugin, McpPermissions};
-use bevy_mcp_server::tools::{BevyMcpServer, BevyMcpState};
+use bevy_mcp_server::AgentBevyMcpServer;
+use bevy_mcp_server::tools::BevyMcpState;
+use rmcp::{ServiceExt, transport::stdio};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ingress = McpIngressQueue::default();
     let results = McpResultQueue::default();
-    let server = BevyMcpServer::new(BevyMcpState::embedded(ingress.clone(), results.clone()));
+    let state = BevyMcpState::embedded(ingress.clone(), results.clone());
 
     std::thread::spawn(move || {
         App::new()
@@ -51,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
             .run();
     });
 
-    server.serve(rmcp::transport::stdio()).await?.waiting().await?;
+    let server = AgentBevyMcpServer::new(state).serve(stdio()).await?;
+    server.waiting().await?;
     Ok(())
 }
 ```

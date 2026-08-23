@@ -1,41 +1,39 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to the current development line are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions. Until a tagged release is cut from the current codebase, `v.01` should be treated as an **unreleased development branch** and the live `capabilities` tool remains authoritative for runtime availability.
 
-## [0.1.0] - 2025-06-15
+## [Unreleased] — `v.01`
 
 ### Added
 
-- Initial release
-- 61 MCP tools for Bevy game engine control
-- ECS inspection (world_summary, entity_query, entity_get, component_get, component_schema)
-- ECS mutation (entity_spawn, entity_despawn, component_insert, component_update, component_remove)
-- Resource inspection and mutation (resource_list, resource_get, resource_schema, resource_update)
-- Runtime control (launch, stop, restart, pause, resume, step, time_scale)
-- Input injection (keyboard, mouse, gamepad, actions)
-- UI interaction (query, inspect, click, type)
-- Camera control (inspect, set_transform, look_at, frame_entity)
-- Screenshot capture (capture_game, capture_camera)
-- Asset management (list, get, status, reload)
-- Event observation
-- Log capture and diagnostics
-- Build tools (cargo check, build, test) with structured output
-- Playtest framework with assertions
-- Batch operations with atomic, dry_run, and verify modes
-- Permission system (Read, Write, Full levels)
-- Deferred command architecture for safe ECS mutation
-- Reflection-based component reading and writing
-- Hierarchy tools (tree view, reparent, duplicate)
-- Plugin detection
-- Operation tracking for async operations
+- Concurrent MCP response dispatching so base, advanced, and debugger requests can be in flight without stealing one another's responses.
+- Causal-debugging surfaces: scoped change tracking, schedule/system inspection, explicit system-access metadata, writer candidates, and timing summaries.
+- Checkpoint, recording, replay, watchpoint, and frame-driven playtest infrastructure.
+- A truthful live capability contract that separates implementation, runtime availability, permission allowance, and deprecation state.
+- Native software-pointer interaction through Bevy picking, including hit testing, move, click, drag, scroll, UI click verification, and editable-text input.
+- Reflection-backed state assertions, including nested component/resource field paths.
+- Known-path asset inspection, load-status reporting, and reload.
+- Bounds-aware camera framing over target/descendant AABBs for perspective and orthographic cameras, including parented rigs.
+- Prevalidated atomic reflected mutation batches for `component_insert`, `component_update`, `component_remove`, and `resource_update`, with validating dry-run support.
 
-### Architecture
+### Changed
 
-- `bevy-mcp-core` — shared protocol types (no Bevy dependency)
-- `bevy-mcp-server` — MCP server over stdio (no Bevy dependency)
-- `bevy-mcp-host` — Bevy plugin bridging MCP and ECS
+- The normal autonomous-agent entry point is `AgentBevyMcpServer`; `BevyMcpServer` remains the base/legacy router.
+- Front-page documentation now describes the live runtime surface instead of a fixed tool count.
+- Agent-facing mutation, interaction, assertion, debugging, and replay flows are documented around the loop `inspect -> mutate -> step/interact -> assert -> diagnose -> replay/checkpoint -> retry`.
 
-[0.1.0]: https://github.com/buddlite/Bevy-mcp/releases/tag/v0.1.0
+### Current limitations
+
+- Embedded `build_check`, `build`, and `test` tools return `BUILD_NOT_AVAILABLE`; agents should use their trusted development shell for Cargo commands.
+- `asset_list` is reserved; loaded-asset enumeration is not implemented.
+- Atomic batches intentionally exclude entity lifecycle, hierarchy changes, input/runtime operations, semantic actions, and arbitrary side effects. `verify` mode is not implemented.
+- Entity duplication remains reserved until safe reflected cloning is implemented.
+- Embedded runtime launch/stop/restart remain externally owned.
+- Generic `input_action` is not implemented; register semantic actions instead.
+- Checkpoint restoration covers only explicitly registered checkpoint state/adapters.
+
+### Release history note
+
+The previous `0.1.0` changelog entry was removed because it described a mixture of planned and unavailable capabilities (including a fixed tool count, embedded Cargo tools, loaded-asset enumeration, broad atomic/verify batching, and entity duplication) rather than a reliable shipped-state record. A tagged release should be added here only when its published crates and documented capability set are reconciled.
