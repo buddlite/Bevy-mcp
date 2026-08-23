@@ -480,13 +480,19 @@ pub struct PlaytestRunParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AssertParams {
     #[schemars(
-        description = "Assertion type: 'entity_exists', 'component_exists', 'entity_count'"
+        description = "Assertion type: 'entity_exists', 'component_exists', 'component_equals', 'resource_equals', or 'entity_count'"
     )]
     pub assertion_type: String,
-    #[schemars(description = "Entity ID")]
+    #[schemars(description = "Entity ID for entity/component assertions")]
     pub entity_id: Option<u32>,
-    #[schemars(description = "Component name")]
+    #[schemars(description = "Component name for component assertions")]
     pub component: Option<String>,
+    #[schemars(description = "Resource name for resource_equals")]
+    pub resource: Option<String>,
+    #[schemars(description = "Dot-separated reflected field path; array indices are supported")]
+    pub field: Option<String>,
+    #[schemars(description = "Expected JSON value for component_equals/resource_equals")]
+    pub expected_value: Option<serde_json::Value>,
     #[schemars(description = "Expected entity count")]
     pub expected_count: Option<u32>,
 }
@@ -680,22 +686,69 @@ impl BevyMcpServer {
         )
     }
 
-    #[tool(description = "Assert a condition about the game state")]
+    #[tool(description = "Assert entity, component, resource, or entity-count state")]
     async fn assert(&self, Parameters(params): Parameters<AssertParams>) -> String {
-        let assertion = match params.assertion_type.as_str() {
+        let assertion_type = params.assertion_type;
+        let assertion = match assertion_type.as_str() {
             "entity_exists" => bevy_mcp_core::command::Assertion::EntityExists {
-                entity_id: params.entity_id.unwrap_or(0),
+                entity_id: match params.entity_id {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "entity_exists requires entity_id"),
+                },
             },
             "component_exists" => bevy_mcp_core::command::Assertion::ComponentExists {
-                entity_id: params.entity_id.unwrap_or(0),
-                component: params.component.unwrap_or_default(),
+                entity_id: match params.entity_id {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "component_exists requires entity_id"),
+                },
+                component: match params.component {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "component_exists requires component"),
+                },
+            },
+            "component_equals" => bevy_mcp_core::command::Assertion::ComponentEquals {
+                entity_id: match params.entity_id {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "component_equals requires entity_id"),
+                },
+                component: match params.component {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "component_equals requires component"),
+                },
+                field: params.field.unwrap_or_default(),
+                value: match params.expected_value {
+                    Some(value) => value,
+                    None => {
+                        return error("MISSING_PARAMS", "component_equals requires expected_value");
+                    }
+                },
+            },
+            "resource_equals" => bevy_mcp_core::command::Assertion::ResourceEquals {
+                resource: match params.resource {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "resource_equals requires resource"),
+                },
+                field: params.field.unwrap_or_default(),
+                value: match params.expected_value {
+                    Some(value) => value,
+                    None => {
+                        return error("MISSING_PARAMS", "resource_equals requires expected_value");
+                    }
+                },
             },
             "entity_count" => bevy_mcp_core::command::Assertion::EntityCount {
-                expected: params.expected_count.unwrap_or(0),
+                expected: match params.expected_count {
+                    Some(value) => value,
+                    None => return error("MISSING_PARAMS", "entity_count requires expected_count"),
+                },
             },
-            _ => return serde_json::json!({"error": "INVALID_ASSERTION", "message": format!("Unknown assertion type: {}", params.assertion_type)}).to_string(),
+            _ => {
+                return error(
+                    "INVALID_ASSERTION",
+                    format!("Unknown assertion type: {assertion_type}"),
+                );
+            }
         };
-
         self.state.call(McpCommand::Assert { assertion }).await
     }
 
