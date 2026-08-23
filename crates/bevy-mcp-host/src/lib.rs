@@ -7,6 +7,7 @@ pub mod debugger;
 pub mod deferred;
 pub mod entity_handle;
 pub mod event_capture;
+pub mod interaction;
 pub mod log_capture;
 pub mod operations;
 pub mod permissions;

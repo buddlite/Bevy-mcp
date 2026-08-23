@@ -32,6 +32,10 @@ fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
         | McpCommand::InputMouseMove { .. }
         | McpCommand::InputAction { .. }
         | McpCommand::InputGamepad { .. }
+        | McpCommand::PickAt { .. }
+        | McpCommand::PointerClick { .. }
+        | McpCommand::PointerDrag { .. }
+        | McpCommand::PointerScroll { .. }
         | McpCommand::UiClick { .. }
         | McpCommand::UiType { .. } => permissions.can_inject_input(),
         McpCommand::RuntimeLaunch
@@ -72,6 +76,11 @@ pub fn ingress_system(world: &mut World) {
                     "The configured MCP permissions do not allow this operation",
                 ),
             });
+            continue;
+        }
+
+        if crate::interaction::is_interaction_command(&entry.command) {
+            crate::interaction::enqueue_command(world, entry.request_id, &entry.command);
             continue;
         }
 
@@ -207,6 +216,42 @@ pub fn ingress_system(world: &mut World) {
                     DeferredCommand::InputGamepad {
                         button: button.clone(),
                         pressed: *pressed,
+                        result_id: entry.request_id,
+                    },
+                );
+            }
+            McpCommand::UiType { entity, text } => {
+                world
+                    .resource_mut::<DeferredMcpCommands>()
+                    .pending
+                    .push(DeferredCommand::UiType {
+                        entity: entity.clone(),
+                        text: text.clone(),
+                        result_id: entry.request_id,
+                    });
+            }
+            McpCommand::CameraFrameEntity { entity } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::CameraFrameEntity {
+                        entity: entity.clone(),
+                        result_id: entry.request_id,
+                    },
+                );
+            }
+            McpCommand::CameraSetTransform { x, y, z } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::CameraSetTransform {
+                        x: *x,
+                        y: *y,
+                        z: *z,
+                        result_id: entry.request_id,
+                    },
+                );
+            }
+            McpCommand::CameraLookAt { entity } => {
+                world.resource_mut::<DeferredMcpCommands>().pending.push(
+                    DeferredCommand::CameraLookAt {
+                        entity: entity.clone(),
                         result_id: entry.request_id,
                     },
                 );
@@ -519,6 +564,38 @@ pub fn deferred_apply_system(world: &mut World) {
                     });
                 }
             }
+            DeferredCommand::UiType {
+                entity,
+                text,
+                result_id,
+            } => {
+                let result = ui_type_apply(world, &entity, &text);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
+            DeferredCommand::CameraFrameEntity { entity, result_id } => {
+                let result = camera_frame_entity_apply(world, &entity);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
+            DeferredCommand::CameraSetTransform { x, y, z, result_id } => {
+                let result = camera_set_transform_apply(world, x, y, z);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
+            DeferredCommand::CameraLookAt { entity, result_id } => {
+                let result = camera_look_at_apply(world, &entity);
+                world.resource::<McpResultQueue>().push(McpResponse {
+                    request_id: result_id,
+                    result,
+                });
+            }
             DeferredCommand::ResourceUpdate {
                 resource,
                 value,
@@ -827,6 +904,13 @@ fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegist
             "INTERNAL",
             format!("InputGamepad should be deferred (button={button}, pressed={pressed})"),
         ),
+        McpCommand::PickAt { .. }
+        | McpCommand::PointerClick { .. }
+        | McpCommand::PointerDrag { .. }
+        | McpCommand::PointerScroll { .. } => McpResult::error(
+            "INTERNAL",
+            "Pointer interaction commands must be handled by the interaction state machine",
+        ),
         McpCommand::Logs { level, limit } => logs(world, level, *limit),
         McpCommand::Diagnostics => diagnostics(world, registry),
         McpCommand::Hierarchy { root, max_depth } => hierarchy(world, root.as_ref(), *max_depth),
@@ -838,17 +922,16 @@ fn execute_command(world: &World, command: &McpCommand, registry: &mut McpRegist
         McpCommand::CaptureGame => capture_game(world),
         McpCommand::CameraFrameEntity { entity } => camera_frame_entity(world, entity),
         McpCommand::CameraInspect => camera_inspect(world),
-        McpCommand::CameraSetTransform { .. } => McpResult::error(
-            "NOT_IMPLEMENTED",
-            "Camera transform control is not implemented",
-        ),
-        McpCommand::CameraLookAt { .. } => {
-            McpResult::error("NOT_IMPLEMENTED", "Camera look-at is not implemented")
+        McpCommand::CameraSetTransform { .. } | McpCommand::CameraLookAt { .. } => {
+            McpResult::error("INTERNAL", "Camera mutation should be deferred")
         }
         McpCommand::CaptureCamera => capture_game(world),
         McpCommand::UiInspect { entity } => ui_inspect(world, entity),
-        McpCommand::UiClick { entity } => ui_click(world, entity),
-        McpCommand::UiType { entity, text } => ui_type(world, entity, text),
+        McpCommand::UiClick { .. } => McpResult::error(
+            "INTERNAL",
+            "UI click should be handled by the interaction state machine",
+        ),
+        McpCommand::UiType { .. } => McpResult::error("INTERNAL", "UI type should be deferred"),
         McpCommand::PlaytestRun { steps } => playtest_run(world, steps),
         McpCommand::Assert { assertion } => assert_condition(world, assertion),
         McpCommand::RuntimeLaunch | McpCommand::RuntimeStop | McpCommand::RuntimeRestart => {
@@ -925,6 +1008,8 @@ fn capabilities(world: &World) -> McpResult {
     let key_input_available = world.contains_resource::<ButtonInput<KeyCode>>();
     let mouse_button_available = world.contains_resource::<ButtonInput<MouseButton>>();
     let gamepad_button_available = world.contains_resource::<ButtonInput<GamepadButton>>();
+    let pointer_available = crate::interaction::pointer_available(world);
+    let camera_available = active_camera_entity(world).is_some();
     let renderer_available = world
         .get_resource::<bevy::render::renderer::RenderDevice>()
         .is_some();
@@ -987,9 +1072,16 @@ fn capabilities(world: &World) -> McpResult {
         "input": {
             "key": capability(true, key_input_available, can_input),
             "mouse_button": capability(true, mouse_button_available, can_input),
-            "mouse_move": capability(false, false, false),
+            "mouse_move": capability(true, pointer_available, can_input),
             "action": capability(false, false, false),
             "gamepad_button": capability(true, gamepad_button_available, can_input),
+        },
+        "interaction": {
+            "pick_at": capability(true, pointer_available, can_input),
+            "pointer_move": capability(true, pointer_available, can_input),
+            "pointer_click": capability(true, pointer_available, can_input),
+            "pointer_drag": capability(true, pointer_available, can_input),
+            "pointer_scroll": capability(true, pointer_available, can_input),
         },
         "capture": {
             "viewport": capability(true, primary_window_available, can_read),
@@ -1014,15 +1106,15 @@ fn capabilities(world: &World) -> McpResult {
         "ui": {
             "query": capability(true, true, can_read),
             "inspect": capability(true, true, can_read),
-            "click": capability(false, false, false),
-            "type_text": capability(false, false, false),
+            "click": capability(true, pointer_available, can_input),
+            "type_text": capability(true, true, can_input),
         },
         "camera": {
             "list": capability(true, true, can_read),
             "inspect": capability(true, true, can_read),
-            "frame_entity": capability(false, false, false),
-            "set_transform": capability(false, false, false),
-            "look_at": capability(false, false, false),
+            "frame_entity": capability(true, camera_available, can_runtime),
+            "set_transform": capability(true, camera_available, can_runtime),
+            "look_at": capability(true, camera_available, can_runtime),
         },
         "assets": {
             "list": capability(false, false, false),
@@ -2023,40 +2115,142 @@ fn ui_inspect(world: &World, handle: &bevy_mcp_core::entity_handle::EntityHandle
     McpResult::success(info)
 }
 
-fn ui_click(world: &World, handle: &bevy_mcp_core::entity_handle::EntityHandle) -> McpResult {
-    let entity = match resolve_entity(world, handle) {
-        Some(e) => e,
-        None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {handle} not found")),
-    };
-
-    if world.get::<bevy::prelude::Button>(entity).is_none() {
-        return McpResult::error("NOT_A_BUTTON", format!("Entity {handle} is not a Button"));
-    }
-
-    McpResult::error(
-        "NOT_IMPLEMENTED",
-        "UI interaction injection is not implemented",
-    )
+fn active_camera_entity(world: &World) -> Option<Entity> {
+    world
+        .iter_entities()
+        .find(|entity| {
+            entity
+                .get::<bevy::prelude::Camera>()
+                .is_some_and(|camera| camera.is_active)
+                && entity.get::<Transform>().is_some()
+        })
+        .map(|entity| entity.id())
+        .or_else(|| {
+            world
+                .iter_entities()
+                .find(|entity| {
+                    entity.get::<bevy::prelude::Camera>().is_some()
+                        && entity.get::<Transform>().is_some()
+                })
+                .map(|entity| entity.id())
+        })
 }
 
-fn ui_type(
-    world: &World,
+fn ui_type_apply(
+    world: &mut World,
     handle: &bevy_mcp_core::entity_handle::EntityHandle,
-    _text: &str,
+    text: &str,
 ) -> McpResult {
     let entity = match resolve_entity(world, handle) {
-        Some(e) => e,
+        Some(entity) => entity,
         None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {handle} not found")),
     };
-
-    if world.get::<bevy::prelude::Text>(entity).is_none() {
+    let Some(mut editable) = world.get_mut::<bevy::text::EditableText>(entity) else {
         return McpResult::error(
-            "NOT_A_TEXT_FIELD",
-            format!("Entity {handle} does not have a Text component"),
+            "NOT_EDITABLE_TEXT",
+            format!("Entity {handle} does not have an EditableText component"),
+        );
+    };
+    editable.queue_edit(bevy::text::TextEdit::Insert(text.into()));
+    McpResult::success(json!({
+        "entity": entity_to_uri(entity),
+        "status": "queued",
+        "text": text,
+    }))
+}
+
+fn target_position(world: &World, entity: Entity) -> Option<Vec3> {
+    world
+        .get::<GlobalTransform>(entity)
+        .map(|transform| transform.translation())
+        .or_else(|| {
+            world
+                .get::<Transform>(entity)
+                .map(|transform| transform.translation)
+        })
+}
+
+fn camera_set_transform_apply(world: &mut World, x: f64, y: f64, z: f64) -> McpResult {
+    let Some(camera) = active_camera_entity(world) else {
+        return McpResult::error("NO_CAMERA", "No camera with a Transform was found");
+    };
+    let Some(mut transform) = world.get_mut::<Transform>(camera) else {
+        return McpResult::error("NO_CAMERA_TRANSFORM", "Active camera has no Transform");
+    };
+    transform.translation = Vec3::new(x as f32, y as f32, z as f32);
+    McpResult::success(json!({
+        "camera": entity_to_uri(camera),
+        "position": {"x": x, "y": y, "z": z},
+    }))
+}
+
+fn camera_look_at_apply(
+    world: &mut World,
+    handle: &bevy_mcp_core::entity_handle::EntityHandle,
+) -> McpResult {
+    let target = match resolve_entity(world, handle) {
+        Some(entity) => entity,
+        None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {handle} not found")),
+    };
+    let Some(target_position) = target_position(world, target) else {
+        return McpResult::error(
+            "NO_TRANSFORM",
+            format!("Entity {handle} has no Transform or GlobalTransform"),
+        );
+    };
+    let Some(camera) = active_camera_entity(world) else {
+        return McpResult::error("NO_CAMERA", "No camera with a Transform was found");
+    };
+    let Some(mut transform) = world.get_mut::<Transform>(camera) else {
+        return McpResult::error("NO_CAMERA_TRANSFORM", "Active camera has no Transform");
+    };
+    if transform.translation.distance_squared(target_position) <= f32::EPSILON {
+        return McpResult::error(
+            "CAMERA_AT_TARGET",
+            "Camera and target occupy the same position",
         );
     }
+    transform.look_at(target_position, Vec3::Y);
+    McpResult::success(json!({
+        "camera": entity_to_uri(camera),
+        "target": entity_to_uri(target),
+    }))
+}
 
-    McpResult::error("NOT_IMPLEMENTED", "UI text input is not implemented")
+fn camera_frame_entity_apply(
+    world: &mut World,
+    handle: &bevy_mcp_core::entity_handle::EntityHandle,
+) -> McpResult {
+    let target = match resolve_entity(world, handle) {
+        Some(entity) => entity,
+        None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {handle} not found")),
+    };
+    let Some(target_position) = target_position(world, target) else {
+        return McpResult::error(
+            "NO_TRANSFORM",
+            format!("Entity {handle} has no Transform or GlobalTransform"),
+        );
+    };
+    let Some(camera) = active_camera_entity(world) else {
+        return McpResult::error("NO_CAMERA", "No camera with a Transform was found");
+    };
+    let Some(mut transform) = world.get_mut::<Transform>(camera) else {
+        return McpResult::error("NO_CAMERA_TRANSFORM", "Active camera has no Transform");
+    };
+    let offset = transform.translation - target_position;
+    let distance = if offset.length() > 0.1 {
+        offset.length()
+    } else {
+        5.0
+    };
+    let direction = offset.try_normalize().unwrap_or(Vec3::Z);
+    transform.translation = target_position + direction * distance;
+    transform.look_at(target_position, Vec3::Y);
+    McpResult::success(json!({
+        "camera": entity_to_uri(camera),
+        "target": entity_to_uri(target),
+        "distance": distance,
+    }))
 }
 
 fn playtest_run(_world: &World, _steps: &[bevy_mcp_core::command::PlaytestStep]) -> McpResult {

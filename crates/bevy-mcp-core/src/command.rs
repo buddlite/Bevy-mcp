@@ -116,6 +116,29 @@ pub enum McpCommand {
         button: String,
         pressed: bool,
     },
+    PickAt {
+        x: f64,
+        y: f64,
+    },
+    PointerClick {
+        x: f64,
+        y: f64,
+        button: String,
+    },
+    PointerDrag {
+        from_x: f64,
+        from_y: f64,
+        to_x: f64,
+        to_y: f64,
+        button: String,
+        steps: u32,
+    },
+    PointerScroll {
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+    },
 
     // -- Diagnostics --
     Logs {

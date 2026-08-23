@@ -54,6 +54,25 @@ pub enum DeferredCommand {
         pressed: bool,
         result_id: u64,
     },
+    UiType {
+        entity: EntityHandle,
+        text: String,
+        result_id: u64,
+    },
+    CameraFrameEntity {
+        entity: EntityHandle,
+        result_id: u64,
+    },
+    CameraSetTransform {
+        x: f64,
+        y: f64,
+        z: f64,
+        result_id: u64,
+    },
+    CameraLookAt {
+        entity: EntityHandle,
+        result_id: u64,
+    },
     ResourceUpdate {
         resource: String,
         value: Value,
