@@ -54,10 +54,7 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 "#,
-            &[
-                ("src/main.rs", "fn main() {}\n"),
-                ("build.rs", build_rs),
-            ],
+            &[("src/main.rs", "fn main() {}\n"), ("build.rs", build_rs)],
         )
     }
 }
@@ -145,7 +142,7 @@ async fn broken_project_returns_structured_compiler_diagnostic() {
     assert!(!diagnostic.message.is_empty());
     assert!(diagnostic.spans.iter().any(|span| {
         span.is_primary
-            && span.file_name.ends_with("src/main.rs")
+            && span.file_name.replace('\\', "/").ends_with("src/main.rs")
             && span.line_start >= 1
             && span.column_start >= 1
     }));
@@ -275,7 +272,11 @@ async fn cancellation_terminates_cargo_descendants() {
 
     let pid_path = project.root.join("descendant.pid");
     wait_for_file(&pid_path, Duration::from_secs(15)).await;
-    let pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+    let pid: u32 = fs::read_to_string(&pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
 
     executor.cancel(&operation.operation_id).await.unwrap();
     let snapshot = wait_terminal(&executor, &operation.operation_id, Duration::from_secs(10)).await;
@@ -294,7 +295,11 @@ async fn timeout_terminates_cargo_descendants() {
 
     let pid_path = project.root.join("descendant.pid");
     wait_for_file(&pid_path, Duration::from_secs(15)).await;
-    let pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+    let pid: u32 = fs::read_to_string(&pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
 
     let snapshot = wait_terminal(&executor, &operation.operation_id, Duration::from_secs(15)).await;
     assert_eq!(snapshot.state, CargoOperationState::TimedOut);

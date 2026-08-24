@@ -661,7 +661,7 @@ impl CargoExecutor {
             kind.command().to_string(),
             "--manifest-path".to_string(),
             project.manifest_path.display().to_string(),
-            "--message-format=json-render-diagnostics".to_string(),
+            "--message-format=json".to_string(),
             "-p".to_string(),
             package.name.clone(),
             "--bin".to_string(),
