@@ -227,5 +227,78 @@ concurrency_test = '''    #[tokio::test]
 ''' + insert_anchor
 replace_once(insert_anchor, concurrency_test, "concurrency test insertion")
 
+# The Stage 1 fixture probe timeout is 150 ms. Keep the delayed response visibly slow while
+# remaining inside that deadline so this tests readiness gating rather than timeout handling.
+replace_once(
+    '''                            std::thread::sleep(Duration::from_millis(180));''',
+    '''                            std::thread::sleep(Duration::from_millis(80));''',
+    "slow readiness delay",
+)
+replace_once(
+    '''        assert!(started.elapsed() >= Duration::from_millis(150));''',
+    '''        assert!(started.elapsed() >= Duration::from_millis(60));''',
+    "slow readiness elapsed assertion",
+)
+
+# AsyncGroupChild::try_wait can report the group leader's exit while descendants are still alive
+# on Unix. Poll the leader explicitly, then retain the process-group / Job Object handle long
+# enough to terminate and drain every remaining owned descendant before clearing the child slot.
+old_reap = '''    async fn reap_if_exited(&self) -> Result<bool, ProcessError> {
+        let mut guard = self.inner.child.lock().await;
+        let Some(managed) = guard.as_mut() else {
+            return Ok(true);
+        };
+        let instance_id = managed.instance_id.clone();
+        match managed.child.try_wait() {
+            Ok(Some(status)) => {
+                guard.take();
+                drop(guard);
+                self.record_exit(&instance_id, status);
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(error) => Err(ProcessError::new(
+                "PROCESS_STATUS_FAILED",
+                format!("Failed to poll managed process state: {error}"),
+            )),
+        }
+    }
+'''
+new_reap = '''    async fn reap_if_exited(&self) -> Result<bool, ProcessError> {
+        let mut guard = self.inner.child.lock().await;
+        let Some(managed) = guard.as_mut() else {
+            return Ok(true);
+        };
+        let instance_id = managed.instance_id.clone();
+        let status = match managed.child.inner().try_wait() {
+            Ok(Some(status)) => status,
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                return Err(ProcessError::new(
+                    "PROCESS_STATUS_FAILED",
+                    format!("Failed to poll managed process leader state: {error}"),
+                ));
+            }
+        };
+
+        // The group leader may exit while owned descendants remain alive. Keep ownership of
+        // the process-group / Job Object until every remaining member has been terminated and
+        // drained. start_kill may report that the group is already gone; that is already clean.
+        let _ = managed.child.start_kill();
+        managed.child.wait().await.map_err(|error| {
+            ProcessError::new(
+                "PROCESS_STATUS_FAILED",
+                format!("Failed to drain managed process tree after leader exit: {error}"),
+            )
+        })?;
+
+        guard.take();
+        drop(guard);
+        self.record_exit(&instance_id, status);
+        Ok(true)
+    }
+'''
+replace_once(old_reap, new_reap, "leader-aware process-tree reap")
+
 path.write_text(text)
-print("Stage 2 lifecycle operations serialized and readiness future made Send")
+print("Stage 2 lifecycle, readiness, and process-tree cleanup fixes applied")
