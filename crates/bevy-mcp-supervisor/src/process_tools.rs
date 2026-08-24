@@ -1,6 +1,9 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
+use bevy_mcp_core::command::{McpCommand, McpResult};
 use bevy_mcp_server::AgentBevyMcpServer;
+use bevy_mcp_server::backend::GameCommandBackend;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerInfo,
@@ -9,21 +12,162 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData, handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use serde::Deserialize;
+use serde_json::{Map, Value, json};
 
-use crate::cargo_executor::{CargoExecutor, CargoInvocation};
+use crate::cargo_executor::{CargoError, CargoExecutor, CargoInvocation};
 use crate::permissions::SupervisorPermissions;
-use crate::process_manager::{ProcessError, ProcessManager};
+use crate::process_manager::{ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState};
+use crate::rebuild_restart::RebuildRestartCoordinator;
 
 fn format_process_error(error: ProcessError) -> String {
     error.to_json().to_string()
 }
 
 fn permission_error(operation: &str) -> String {
-    serde_json::json!({
+    json!({
         "error": "SUPERVISOR_PERMISSION_DENIED",
         "message": format!("Supervisor permission for {operation} is disabled"),
     })
     .to_string()
+}
+
+fn capability(implemented: bool, available: bool, allowed: bool) -> Value {
+    json!({
+        "implemented": implemented,
+        "available": available,
+        "allowed": allowed,
+        "operational": implemented && available && allowed,
+    })
+}
+
+fn object_field<'a>(root: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
+    if !root.is_object() {
+        *root = json!({});
+    }
+    let root_object = root.as_object_mut().expect("root was normalized to object");
+    if !root_object.get(key).is_some_and(Value::is_object) {
+        root_object.insert(key.to_string(), json!({}));
+    }
+    root_object
+        .get_mut(key)
+        .and_then(Value::as_object_mut)
+        .expect("field was normalized to object")
+}
+
+pub(crate) fn merge_supervisor_capabilities(
+    mut host: Value,
+    connected: bool,
+    ready: bool,
+    instance_id: Option<String>,
+    connection_id: Option<String>,
+    process: &ProcessSnapshot,
+    configured_launch_target: bool,
+    cargo_available: bool,
+    permissions: SupervisorPermissions,
+    cargo_error: Option<CargoError>,
+    host_error: Option<Value>,
+) -> Value {
+    if !host.is_object() {
+        host = json!({});
+    }
+    let rebuild_allowed = permissions.cargo_check
+        && permissions.cargo_build
+        && permissions.process_stop
+        && permissions.process_launch;
+    let direct_launch_available = configured_launch_target
+        && process.ownership != ProcessOwnership::External
+        && !matches!(
+            process.state,
+            ProcessState::Running | ProcessState::Starting | ProcessState::Stopping
+        );
+    let managed = process.ownership == ProcessOwnership::Managed;
+    let managed_running = managed
+        && matches!(
+            process.state,
+            ProcessState::Running | ProcessState::Starting | ProcessState::Stopping
+        );
+    let rebuild_available = cargo_available && process.ownership != ProcessOwnership::External;
+
+    {
+        let object = host.as_object_mut().unwrap();
+        object.insert("schema_version".to_string(), json!(2));
+        object.insert("mode".to_string(), json!("supervised"));
+        object.insert("connected".to_string(), json!(connected));
+        object.insert("ready".to_string(), json!(ready));
+        object.insert("instance_id".to_string(), json!(instance_id));
+        object.insert("connection_id".to_string(), json!(connection_id));
+    }
+
+    {
+        let permission_object = object_field(&mut host, "permissions");
+        permission_object.insert(
+            "build".to_string(),
+            json!(permissions.cargo_check || permissions.cargo_build || permissions.cargo_test),
+        );
+        permission_object.insert("cargo_check".to_string(), json!(permissions.cargo_check));
+        permission_object.insert("cargo_build".to_string(), json!(permissions.cargo_build));
+        permission_object.insert("cargo_test".to_string(), json!(permissions.cargo_test));
+        permission_object.insert("process_launch".to_string(), json!(permissions.process_launch));
+        permission_object.insert("process_stop".to_string(), json!(permissions.process_stop));
+        permission_object.insert("process_restart".to_string(), json!(permissions.process_restart));
+    }
+
+    {
+        let runtime = object_field(&mut host, "runtime");
+        runtime.insert(
+            "launch".to_string(),
+            capability(true, direct_launch_available, permissions.process_launch),
+        );
+        runtime.insert(
+            "stop".to_string(),
+            capability(true, managed_running, permissions.process_stop),
+        );
+        runtime.insert(
+            "restart".to_string(),
+            capability(true, managed, permissions.process_restart),
+        );
+        runtime.insert(
+            "rebuild_restart".to_string(),
+            capability(true, rebuild_available, rebuild_allowed),
+        );
+    }
+
+    {
+        let build = object_field(&mut host, "build");
+        build.insert(
+            "check".to_string(),
+            capability(true, cargo_available, permissions.cargo_check),
+        );
+        build.insert(
+            "build".to_string(),
+            capability(true, cargo_available, permissions.cargo_build),
+        );
+        build.insert(
+            "test".to_string(),
+            capability(true, cargo_available, permissions.cargo_test),
+        );
+    }
+
+    let supervisor = json!({
+        "cargo": {
+            "available": cargo_available,
+            "initialization_error": cargo_error.map(|error| error.to_json()),
+        },
+        "process": process,
+        "configured_launch_target": configured_launch_target,
+        "rebuild_restart": {
+            "implemented": true,
+            "available": rebuild_available,
+            "allowed": rebuild_allowed,
+            "operational": rebuild_available && rebuild_allowed,
+            "policy": "check-while-running -> stop -> build -> launch-cargo-artifact -> authenticate -> host-probe-ready",
+        },
+        "host_capability_error": host_error,
+    });
+    host.as_object_mut()
+        .unwrap()
+        .insert("supervisor".to_string(), supervisor);
+    host
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -31,6 +175,12 @@ pub struct ProcessLogsParams {
     #[schemars(description = "Optional stream filter: stdout or stderr.")]
     pub stream: Option<String>,
     #[schemars(description = "Maximum newest log lines to return (default 200).")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProcessEvidenceParams {
+    #[schemars(description = "Maximum newest stdout/stderr lines per stream (default 50).")]
     pub limit: Option<u32>,
 }
 
@@ -90,7 +240,7 @@ impl CargoTestParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OperationStatusParams {
-    #[schemars(description = "Operation ID to check. Omit to list supervisor Cargo operations.")]
+    #[schemars(description = "Operation ID to check. Omit to list supervisor operations.")]
     pub operation_id: Option<String>,
 }
 
@@ -104,6 +254,7 @@ pub struct OperationCancelParams {
 pub struct SupervisorToolServer {
     manager: ProcessManager,
     cargo: CargoExecutor,
+    rebuild: RebuildRestartCoordinator,
     permissions: SupervisorPermissions,
 }
 
@@ -113,9 +264,11 @@ impl SupervisorToolServer {
         cargo: CargoExecutor,
         permissions: SupervisorPermissions,
     ) -> Self {
+        let rebuild = RebuildRestartCoordinator::new(manager.clone(), cargo.clone(), permissions);
         Self {
             manager,
             cargo,
+            rebuild,
             permissions,
         }
     }
@@ -124,10 +277,75 @@ impl SupervisorToolServer {
 #[tool_router(server_handler)]
 impl SupervisorToolServer {
     #[tool(
+        description = "Report the merged live capability contract from the Bevy host and persistent supervisor, including Cargo and process lifecycle availability."
+    )]
+    async fn capabilities(&self) -> String {
+        let backend = self.manager.backend();
+        let backend_status = backend.status();
+        let mut host_error = None;
+        let host = if backend_status.connected && backend_status.ready {
+            match backend
+                .call(McpCommand::Capabilities, Duration::from_secs(5))
+                .await
+            {
+                Ok(McpResult::Success(value)) => value,
+                Ok(McpResult::Error { code, message }) => {
+                    host_error = Some(json!({ "error": code, "message": message }));
+                    json!({})
+                }
+                Err(error) => {
+                    host_error = Some(json!({ "error": error.code, "message": error.message }));
+                    json!({})
+                }
+            }
+        } else {
+            host_error = Some(json!({
+                "error": "GAME_UNAVAILABLE",
+                "message": "Bevy host is not ready; host-only runtime capabilities are unavailable"
+            }));
+            json!({})
+        };
+        let process = self.manager.status().await;
+        merge_supervisor_capabilities(
+            host,
+            backend_status.connected,
+            backend_status.ready,
+            backend_status.instance_id,
+            backend_status.connection_id,
+            &process,
+            self.manager.has_configured_launch_target(),
+            self.cargo.available(),
+            self.permissions,
+            self.cargo.initialization_error(),
+            host_error,
+        )
+        .to_string()
+    }
+
+    #[tool(
         description = "Return managed/external process ownership plus process, transport, and Bevy-host readiness state."
     )]
     async fn process_status(&self) -> String {
         serde_json::to_string(&self.manager.status().await).unwrap()
+    }
+
+    #[tool(
+        description = "Return process status plus bounded stdout/stderr tails for startup and crash diagnosis."
+    )]
+    async fn process_evidence(
+        &self,
+        Parameters(params): Parameters<ProcessEvidenceParams>,
+    ) -> String {
+        let limit = params.limit.unwrap_or(50).clamp(1, 1000) as usize;
+        let status = self.manager.status().await;
+        let stdout_tail = self.manager.logs(Some("stdout"), limit).unwrap_or_default();
+        let stderr_tail = self.manager.logs(Some("stderr"), limit).unwrap_or_default();
+        json!({
+            "process": status,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+        })
+        .to_string()
     }
 
     #[tool(
@@ -177,7 +395,7 @@ impl SupervisorToolServer {
             params.stream.as_deref(),
             params.limit.unwrap_or(200) as usize,
         ) {
-            Ok(logs) => serde_json::json!({ "logs": logs, "count": logs.len() }).to_string(),
+            Ok(logs) => json!({ "logs": logs, "count": logs.len() }).to_string(),
             Err(error) => format_process_error(error),
         }
     }
@@ -213,32 +431,78 @@ impl SupervisorToolServer {
     }
 
     #[tool(
-        description = "Read a supervisor Cargo operation by ID, or list all supervisor Cargo operations when no ID is supplied. Game operation IDs continue to route to the Bevy host."
+        description = "Start the conservative autonomous development cycle: check while the current game remains live, stop only after check succeeds, build, launch Cargo's reported executable, authenticate, and wait for host readiness."
     )]
-    async fn operation_status(
-        &self,
-        Parameters(params): Parameters<OperationStatusParams>,
-    ) -> String {
-        match self.cargo.status(params.operation_id.as_deref()) {
-            Ok(mut operations) if params.operation_id.is_some() => {
-                serde_json::to_string(&operations.remove(0)).unwrap()
-            }
-            Ok(operations) => serde_json::json!({
-                "operations": operations,
-                "count": operations.len(),
-            })
-            .to_string(),
+    async fn rebuild_restart(&self, Parameters(params): Parameters<CargoToolParams>) -> String {
+        match self.rebuild.start(params.into_invocation()) {
+            Ok(operation) => serde_json::to_string(&operation).unwrap(),
             Err(error) => error.to_json().to_string(),
         }
     }
 
     #[tool(
-        description = "Cancel a supervisor Cargo operation and terminate its owned Cargo process tree. Game operation IDs continue to route to the Bevy host."
+        description = "Read a supervisor Cargo or rebuild_restart operation by ID, or list all supervisor operations when no ID is supplied. Game operation IDs continue to route to the Bevy host."
+    )]
+    async fn operation_status(
+        &self,
+        Parameters(params): Parameters<OperationStatusParams>,
+    ) -> String {
+        if let Some(operation_id) = params.operation_id.as_deref() {
+            if operation_id.starts_with("supervisor:rebuild_restart:") {
+                return match self.rebuild.status(Some(operation_id)) {
+                    Ok(mut operations) => serde_json::to_string(&operations.remove(0)).unwrap(),
+                    Err(error) => error.to_json().to_string(),
+                };
+            }
+            return match self.cargo.status(Some(operation_id)) {
+                Ok(mut operations) => serde_json::to_string(&operations.remove(0)).unwrap(),
+                Err(error) => error.to_json().to_string(),
+            };
+        }
+
+        let cargo = match self.cargo.status(None) {
+            Ok(operations) => operations,
+            Err(error) => return error.to_json().to_string(),
+        };
+        let rebuild = match self.rebuild.status(None) {
+            Ok(operations) => operations,
+            Err(error) => return error.to_json().to_string(),
+        };
+        let mut operations: Vec<Value> = cargo
+            .into_iter()
+            .filter_map(|operation| serde_json::to_value(operation).ok())
+            .collect();
+        operations.extend(
+            rebuild
+                .into_iter()
+                .filter_map(|operation| serde_json::to_value(operation).ok()),
+        );
+        operations.sort_by_key(|operation| {
+            operation
+                .get("created_unix_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        });
+        json!({
+            "count": operations.len(),
+            "operations": operations,
+        })
+        .to_string()
+    }
+
+    #[tool(
+        description = "Cancel a supervisor Cargo or rebuild_restart operation. Cargo process trees are terminated; lifecycle-stage cancellation is applied at the next safe boundary. Game operation IDs continue to route to the Bevy host."
     )]
     async fn operation_cancel(
         &self,
         Parameters(params): Parameters<OperationCancelParams>,
     ) -> String {
+        if params.operation_id.starts_with("supervisor:rebuild_restart:") {
+            return match self.rebuild.cancel(&params.operation_id).await {
+                Ok(operation) => serde_json::to_string(&operation).unwrap(),
+                Err(error) => error.to_json().to_string(),
+            };
+        }
         match self.cargo.cancel(&params.operation_id).await {
             Ok(operation) => serde_json::to_string(&operation).unwrap(),
             Err(error) => error.to_json().to_string(),
