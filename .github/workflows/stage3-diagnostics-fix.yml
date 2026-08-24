@@ -1,9 +1,9 @@
 name: Stage 3 Diagnostics Fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - stage3/cargo-executor
+      - v.01
 
 permissions:
   contents: write
