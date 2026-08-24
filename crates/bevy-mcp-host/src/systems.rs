@@ -3,7 +3,9 @@ use serde::de::DeserializeSeed;
 use serde_json::{Value, json};
 
 use crate::deferred::{DeferredCommand, DeferredMcpCommands};
-use crate::entity_handle::{entity_to_uri, resolve_entity, resolve_entity_by_index};
+use crate::entity_handle::{
+    entity_to_uri, resolve_entity, resolve_entity_by_index, validate_command_entity_handles,
+};
 use crate::permissions::{McpPermissions, PermissionLevel};
 use crate::queue::{McpIngressQueue, McpResultQueue};
 use crate::registry::McpRegistry;

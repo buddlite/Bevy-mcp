@@ -1,17 +1,17 @@
 use std::collections::HashMap;
-use std::future::Future;
 use std::io;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bevy_mcp_core::command::{McpCommand, McpResult};
 use bevy_mcp_core::wire::{
-    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, WireEnvelope, WireError, WireMessage, WireResponse,
-    SUPERVISOR_PROTOCOL_VERSION,
+    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, SUPERVISOR_PROTOCOL_VERSION, WireEnvelope, WireError,
+    WireMessage, WireResponse,
 };
-use bevy_mcp_server::backend::{BackendFuture, GameCallError, GameCommandBackend};
+use bevy_mcp_server::backend::{
+    BackendFuture, BackendMode, GameBackendStatus, GameCallError, GameCommandBackend,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
@@ -186,7 +186,10 @@ impl SupervisorBackend {
                 }
                 Err(GameCallError::new(
                     "REQUEST_TIMEOUT",
-                    format!("Game did not respond within {:.1} seconds", timeout.as_secs_f64()),
+                    format!(
+                        "Game did not respond within {:.1} seconds",
+                        timeout.as_secs_f64()
+                    ),
                 ))
             }
         }
@@ -238,9 +241,7 @@ impl SupervisorBackend {
             let mut pending = self.inner.pending.lock().unwrap();
             let ids: Vec<u64> = pending
                 .iter()
-                .filter_map(|(id, request)| {
-                    (request.connection_id == connection_id).then_some(*id)
-                })
+                .filter_map(|(id, request)| (request.connection_id == connection_id).then_some(*id))
                 .collect();
             ids.into_iter()
                 .filter_map(|id| pending.remove(&id))
@@ -270,10 +271,18 @@ impl SupervisorBackend {
 
 impl GameCommandBackend for SupervisorBackend {
     fn call(&self, command: McpCommand, timeout: Duration) -> BackendFuture<'_> {
-        Box::pin(async move {
-            self.call_on_connection(command, timeout, None, false)
-                .await
-        })
+        Box::pin(async move { self.call_on_connection(command, timeout, None, false).await })
+    }
+
+    fn status(&self) -> GameBackendStatus {
+        let snapshot = self.snapshot();
+        GameBackendStatus {
+            mode: BackendMode::Supervised,
+            connected: snapshot.transport == TransportState::Connected,
+            ready: snapshot.host == HostState::Ready,
+            instance_id: Some(snapshot.instance_id),
+            connection_id: snapshot.connection_id,
+        }
     }
 }
 
@@ -357,10 +366,12 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
         ))
     } else {
         match &envelope.message {
-            WireMessage::Hello(hello) if hello.token != backend.inner.token => Some(WireError::new(
-                "AUTH_FAILED",
-                "Supervisor authentication token did not match",
-            )),
+            WireMessage::Hello(hello) if hello.token != backend.inner.token => {
+                Some(WireError::new(
+                    "AUTH_FAILED",
+                    "Supervisor authentication token did not match",
+                ))
+            }
             WireMessage::Hello(hello)
                 if hello.instance_id != backend.inner.expected_instance_id =>
             {
@@ -372,12 +383,12 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
                     ),
                 ))
             }
-            WireMessage::Hello(_) if backend.inner.active.lock().unwrap().is_some() => Some(
-                WireError::new(
+            WireMessage::Hello(_) if backend.inner.active.lock().unwrap().is_some() => {
+                Some(WireError::new(
                     "INSTANCE_ALREADY_CONNECTED",
                     "A game connection is already active for this supervisor",
-                ),
-            ),
+                ))
+            }
             WireMessage::Hello(_) => None,
             _ => Some(WireError::new(
                 "MALFORMED_FRAME",
@@ -462,7 +473,8 @@ async fn read_loop(
     connection_id: String,
 ) {
     loop {
-        let Ok(envelope) = read_envelope(&mut reader, backend.inner.maximum_frame_size).await else {
+        let Ok(envelope) = read_envelope(&mut reader, backend.inner.maximum_frame_size).await
+        else {
             break;
         };
         if envelope.protocol_version != SUPERVISOR_PROTOCOL_VERSION
@@ -551,6 +563,54 @@ mod tests {
         }
     }
 
+    async fn wait_for_host_state(
+        backend: &SupervisorBackend,
+        expected: HostState,
+        timeout: Duration,
+    ) {
+        let observed = tokio::time::timeout(timeout, async {
+            loop {
+                let actual = backend.snapshot().host;
+                if actual == expected {
+                    return actual;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            observed.unwrap_or_else(|_| panic!(
+                "timed out waiting for host state {expected:?}; snapshot: {:?}",
+                backend.snapshot()
+            )),
+            expected
+        );
+    }
+
+    async fn wait_for_transport_state(
+        backend: &SupervisorBackend,
+        expected: TransportState,
+        timeout: Duration,
+    ) {
+        let observed = tokio::time::timeout(timeout, async {
+            loop {
+                let actual = backend.snapshot().transport;
+                if actual == expected {
+                    return actual;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            observed.unwrap_or_else(|_| panic!(
+                "timed out waiting for transport state {expected:?}; snapshot: {:?}",
+                backend.snapshot()
+            )),
+            expected
+        );
+    }
+
     #[tokio::test]
     async fn hello_alone_is_not_ready_and_probe_timeout_marks_unresponsive() {
         let transport = SupervisorTransport::bind_with_options(
@@ -608,13 +668,19 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(transport.backend().snapshot().host, HostState::Ready);
+        wait_for_host_state(
+            &transport.backend(),
+            HostState::Ready,
+            Duration::from_millis(250),
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn wrong_token_is_rejected_without_poisoning_next_connection() {
-        let transport = SupervisorTransport::bind("run-test", "secret").await.unwrap();
+        let transport = SupervisorTransport::bind("run-test", "secret")
+            .await
+            .unwrap();
         let mut bad = TcpStream::connect(transport.address()).await.unwrap();
         write_envelope(
             &mut bad,
@@ -635,12 +701,166 @@ mod tests {
         assert!(matches!(rejection.message, WireMessage::HelloRejected(_)));
 
         let (_good, _) = fake_hello(transport.address(), "secret", "run-test").await;
-        assert_eq!(transport.backend().snapshot().transport, TransportState::Connected);
+        assert_eq!(
+            transport.backend().snapshot().transport,
+            TransportState::Connected
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_request_fails_immediately_when_connection_generation_disconnects() {
+        let transport = SupervisorTransport::bind_with_options(
+            "run-test".into(),
+            "secret".into(),
+            DEFAULT_MAX_FRAME_SIZE,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let backend = transport.backend();
+        let (mut stream, connection_id) =
+            fake_hello(transport.address(), "secret", "run-test").await;
+
+        // Consume the automatic readiness probe without acknowledging it so the host remains Waiting.
+        let probe = read_envelope(&mut stream, DEFAULT_MAX_FRAME_SIZE)
+            .await
+            .unwrap();
+        assert!(matches!(
+            probe.message,
+            WireMessage::Command(WireCommand {
+                command: McpCommand::HostProbe { .. },
+                ..
+            })
+        ));
+
+        let call_backend = backend.clone();
+        let required_connection_id = connection_id.clone();
+        let call = tokio::spawn(async move {
+            call_backend
+                .call_on_connection(
+                    McpCommand::WorldSummary,
+                    Duration::from_secs(2),
+                    Some(&required_connection_id),
+                    true,
+                )
+                .await
+        });
+
+        let command = read_envelope(&mut stream, DEFAULT_MAX_FRAME_SIZE)
+            .await
+            .unwrap();
+        assert!(matches!(
+            command.message,
+            WireMessage::Command(WireCommand {
+                command: McpCommand::WorldSummary,
+                ..
+            })
+        ));
+
+        drop(stream);
+        let error = tokio::time::timeout(Duration::from_millis(250), call)
+            .await
+            .expect("pending call was not failed promptly on disconnect")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, "GAME_DISCONNECTED");
+        wait_for_transport_state(
+            &backend,
+            TransportState::Disconnected,
+            Duration::from_millis(250),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_after_transport_loss_gets_a_new_connection_generation() {
+        let transport = SupervisorTransport::bind_with_options(
+            "run-test".into(),
+            "secret".into(),
+            DEFAULT_MAX_FRAME_SIZE,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let backend = transport.backend();
+        let (first, first_connection_id) =
+            fake_hello(transport.address(), "secret", "run-test").await;
+        drop(first);
+
+        wait_for_transport_state(
+            &backend,
+            TransportState::Disconnected,
+            Duration::from_millis(250),
+        )
+        .await;
+
+        let (_second, second_connection_id) =
+            fake_hello(transport.address(), "secret", "run-test").await;
+        assert_ne!(first_connection_id, second_connection_id);
+        assert_eq!(
+            backend.snapshot().connection_id.as_deref(),
+            Some(second_connection_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_response_cannot_resolve_current_pending_request() {
+        let backend = SupervisorBackend::new(
+            "run-test".into(),
+            "secret".into(),
+            DEFAULT_MAX_FRAME_SIZE,
+            Duration::from_secs(1),
+        );
+        let request_id = 77;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        backend.inner.pending.lock().unwrap().insert(
+            request_id,
+            PendingRequest {
+                connection_id: "conn-current".into(),
+                sender,
+            },
+        );
+
+        backend.route_response(
+            "conn-stale",
+            WireResponse {
+                request_id,
+                result: McpResult::success(serde_json::json!({ "source": "stale" })),
+            },
+        );
+        assert!(
+            backend
+                .inner
+                .pending
+                .lock()
+                .unwrap()
+                .contains_key(&request_id)
+        );
+
+        backend.route_response(
+            "conn-current",
+            WireResponse {
+                request_id,
+                result: McpResult::success(serde_json::json!({ "source": "current" })),
+            },
+        );
+        let result = receiver.await.unwrap().unwrap();
+        match result {
+            McpResult::Success(value) => {
+                assert_eq!(
+                    value.get("source").and_then(|value| value.as_str()),
+                    Some("current")
+                );
+            }
+            other => panic!("expected current-generation success, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn simultaneous_second_game_is_rejected() {
-        let transport = SupervisorTransport::bind("run-test", "secret").await.unwrap();
+        let transport = SupervisorTransport::bind("run-test", "secret")
+            .await
+            .unwrap();
         let (_first, _) = fake_hello(transport.address(), "secret", "run-test").await;
         let mut second = TcpStream::connect(transport.address()).await.unwrap();
         write_envelope(

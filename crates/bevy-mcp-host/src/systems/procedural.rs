@@ -67,7 +67,7 @@ pub(crate) fn mesh_spawn_apply(
     }
 
     McpResult::success(json!({
-        "handle": entity_to_uri(entity),
+        "handle": entity_to_uri(world, entity),
         "id": entity.index().index(),
         "shape": shape,
         "size": size,
@@ -253,7 +253,7 @@ pub(crate) fn template_load_apply(
     }
 
     McpResult::success(json!({
-        "handle": entity_to_uri(entity),
+        "handle": entity_to_uri(world, entity),
         "id": entity.index().index(),
         "template_name": template_name,
         "components_inserted": inserted,

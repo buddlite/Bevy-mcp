@@ -907,7 +907,7 @@ fn advanced_entity_query(world: &World, query: &AdvancedEntityQuery) -> McpResul
         let mut row = serde_json::Map::new();
         row.insert(
             "entity".into(),
-            Value::String(entity_to_uri(entity_ref.id())),
+            Value::String(entity_to_uri(world, entity_ref.id())),
         );
         if let Some(name) = entity_ref.get::<Name>() {
             row.insert("name".into(), Value::String(name.as_str().to_owned()));

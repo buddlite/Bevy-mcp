@@ -15,7 +15,7 @@ pub(crate) fn ui_query(
     ) -> serde_json::Value {
         if depth >= max_depth {
             return json!({
-                "handle": entity_to_uri(entity),
+                "handle": entity_to_uri(world, entity),
                 "id": entity.index().index(),
                 "children": [],
                 "truncated": true,
@@ -23,7 +23,7 @@ pub(crate) fn ui_query(
         }
 
         let mut node_info = json!({
-            "handle": entity_to_uri(entity),
+            "handle": entity_to_uri(world, entity),
             "id": entity.index().index(),
         });
 
@@ -87,7 +87,7 @@ pub(crate) fn ui_inspect(
     };
 
     let mut info = json!({
-        "handle": entity_to_uri(entity),
+        "handle": entity_to_uri(world, entity),
         "id": entity.index().index(),
     });
 

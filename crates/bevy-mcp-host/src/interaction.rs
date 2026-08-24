@@ -531,9 +531,9 @@ fn hit_rows(world: &World, pointer_entity: Entity) -> Vec<Value> {
         .iter()
         .map(|(entity, hit)| {
             json!({
-                "entity": entity_to_uri(*entity),
+                "entity": entity_to_uri(world, *entity),
                 "id": entity.index().index(),
-                "camera": entity_to_uri(hit.camera),
+                "camera": entity_to_uri(world, hit.camera),
                 "depth": hit.depth,
                 "position": hit.position.map(|point| json!({"x": point.x, "y": point.y, "z": point.z})),
                 "normal": hit.normal.map(|normal| json!({"x": normal.x, "y": normal.y, "z": normal.z})),
@@ -601,7 +601,7 @@ pub fn interaction_result_system(world: &mut World) {
                         "TARGET_NOT_PICKED",
                         format!(
                             "UI target {} was not under the MCP pointer after moving to its computed center",
-                            entity_to_uri(*expected)
+                            entity_to_uri(world, *expected)
                         ),
                     ));
                 } else {

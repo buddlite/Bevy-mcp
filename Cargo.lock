@@ -439,6 +439,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy-mcp-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "bevy-mcp-core",
+ "bevy-mcp-host",
+ "bevy-mcp-server",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "bevy_a11y"
 version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

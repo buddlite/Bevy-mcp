@@ -38,7 +38,7 @@ pub(crate) fn ui_type_apply(
     };
     editable.queue_edit(bevy::text::TextEdit::Insert(text.into()));
     McpResult::success(json!({
-        "entity": entity_to_uri(entity),
+        "entity": entity_to_uri(world, entity),
         "status": "queued",
         "text": text,
     }))
@@ -150,7 +150,7 @@ pub(crate) fn aggregate_world_bounds(
                 "BOUNDS_NOT_READY",
                 format!(
                     "Entity {} has an Aabb but its world transform is not available",
-                    entity_to_uri(entity)
+                    entity_to_uri(world, entity)
                 ),
             ));
         };
@@ -233,7 +233,7 @@ pub(crate) fn camera_set_transform_apply(world: &mut World, x: f64, y: f64, z: f
         return error;
     }
     McpResult::success(json!({
-        "camera": entity_to_uri(camera),
+        "camera": entity_to_uri(world, camera),
         "position": {"x": x, "y": y, "z": z},
         "space": "world",
     }))
@@ -274,8 +274,8 @@ pub(crate) fn camera_look_at_apply(
         return error;
     }
     McpResult::success(json!({
-        "camera": entity_to_uri(camera),
-        "target": entity_to_uri(target),
+        "camera": entity_to_uri(world, camera),
+        "target": entity_to_uri(world, target),
     }))
 }
 
@@ -525,8 +525,8 @@ pub(crate) fn camera_frame_entity_apply(
     };
 
     McpResult::success(json!({
-        "camera": entity_to_uri(camera),
-        "target": entity_to_uri(target),
+        "camera": entity_to_uri(world, camera),
+        "target": entity_to_uri(world, target),
         "margin": margin,
         "bounded_entities": bounds.bounded_entities,
         "bounds": {
@@ -556,7 +556,7 @@ pub(crate) fn camera_inspect(world: &World) -> McpResult {
         let entity = entity_ref.id();
         if let Some(camera) = world.get::<bevy::prelude::Camera>(entity) {
             let mut info = json!({
-                "handle": entity_to_uri(entity),
+                "handle": entity_to_uri(world, entity),
                 "id": entity.index().index(),
                 "is_active": camera.is_active,
             });

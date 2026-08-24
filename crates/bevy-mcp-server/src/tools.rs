@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
 
 use bevy_mcp_core::command::{McpCommand, MutationOperation};
 use bevy_mcp_core::entity_handle::EntityHandle;
@@ -7,7 +7,7 @@ use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use serde::Deserialize;
 
-use crate::response_dispatcher::McpResponseDispatcher;
+use crate::backend::{EmbeddedBackend, SharedGameCommandBackend, format_backend_result};
 
 // ---------------------------------------------------------------------------
 // Shared state between MCP server and Bevy app
@@ -19,38 +19,41 @@ use crate::response_dispatcher::McpResponseDispatcher;
 /// Resource wrappers. Both sides communicate through the core queues.
 #[derive(Clone)]
 pub struct BevyMcpState {
-    pub ingress: McpIngressQueue,
-    pub results: McpResultQueue,
-    pub connected: Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) dispatcher: McpResponseDispatcher,
+    backend: SharedGameCommandBackend,
 }
 
 impl BevyMcpState {
     pub fn new(ingress: McpIngressQueue, results: McpResultQueue) -> Self {
-        let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let dispatcher =
-            McpResponseDispatcher::new(ingress.clone(), results.clone(), connected.clone());
+        let connected = Arc::new(AtomicBool::new(false));
         Self {
-            ingress,
-            results,
-            connected,
-            dispatcher,
+            backend: Arc::new(EmbeddedBackend::new(ingress, results, connected)),
         }
     }
 
     /// Construct state for an MCP server embedded in the same process as Bevy.
     /// The caller must give the same queues to `BevyMcpPlugin::with_queues`.
     pub fn embedded(ingress: McpIngressQueue, results: McpResultQueue) -> Self {
-        let state = Self::new(ingress, results);
-        state.connected.store(true, Ordering::Relaxed);
-        state
+        let connected = Arc::new(AtomicBool::new(true));
+        Self {
+            backend: Arc::new(EmbeddedBackend::new(ingress, results, connected)),
+        }
     }
 
-    /// Push a command and wait for the correlated response through the shared dispatcher.
+    /// Construct the MCP tool surface over an arbitrary game-command transport.
+    pub fn from_backend(backend: SharedGameCommandBackend) -> Self {
+        Self { backend }
+    }
+
+    pub(crate) fn backend(&self) -> SharedGameCommandBackend {
+        self.backend.clone()
+    }
+
     async fn call(&self, command: McpCommand) -> String {
-        self.dispatcher
-            .call(command, std::time::Duration::from_secs(5))
-            .await
+        format_backend_result(
+            self.backend
+                .call(command, std::time::Duration::from_secs(5))
+                .await,
+        )
     }
 }
 
@@ -556,11 +559,16 @@ impl BevyMcpServer {
         description = "Report the live MCP capability contract from the Bevy host, including implementation, runtime availability, permission allowance, and deprecations."
     )]
     async fn capabilities(&self) -> String {
-        if !self.state.connected.load(Ordering::Relaxed) {
+        let status = self.state.backend().status();
+        if !status.connected || !status.ready {
             return serde_json::json!({
                 "schema_version": 2,
-                "connected": false,
-                "message": "Bevy host is not connected; runtime availability and permissions are unknown"
+                "mode": status.mode.as_str(),
+                "connected": status.connected,
+                "ready": status.ready,
+                "instance_id": status.instance_id,
+                "connection_id": status.connection_id,
+                "message": "Bevy host is not ready; runtime availability and permissions are unknown"
             })
             .to_string();
         }
@@ -569,19 +577,29 @@ impl BevyMcpServer {
 
     #[tool(description = "List connected Bevy application instances")]
     fn instances(&self) -> String {
-        let connected = self.state.connected.load(Ordering::Relaxed);
-        serde_json::json!({
-            "instances": if connected {
-                vec![serde_json::json!({"id": "default", "status": "running"})]
-            } else { vec![] }
-        })
-        .to_string()
+        let status = self.state.backend().status();
+        let instances = if status.connected {
+            vec![serde_json::json!({
+                "id": status.instance_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                "status": if status.ready { "running" } else { "connecting" },
+                "mode": status.mode.as_str(),
+                "connection_id": status.connection_id,
+            })]
+        } else {
+            vec![]
+        };
+        serde_json::json!({ "instances": instances }).to_string()
     }
 
     #[tool(description = "Get project info (name, path, bevy version, cargo metadata)")]
     fn project_info(&self) -> String {
+        let status = self.state.backend().status();
         serde_json::json!({
-            "connected": self.state.connected.load(Ordering::Relaxed),
+            "mode": status.mode.as_str(),
+            "connected": status.connected,
+            "ready": status.ready,
+            "instance_id": status.instance_id,
+            "connection_id": status.connection_id,
         })
         .to_string()
     }
