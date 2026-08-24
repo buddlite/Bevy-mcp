@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  fix-and-validate:
+  linux:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -17,7 +17,15 @@ jobs:
         with:
           ref: stage3/cargo-executor
       - uses: dtolnay/rust-toolchain@stable
-      - name: Fix Cargo diagnostic message mode
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply structured diagnostics fix
         shell: python
         run: |
           from pathlib import Path
@@ -28,17 +36,70 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
           path.write_text(text.replace(old, new))
-      - name: Format check
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
         run: cargo fmt --all -- --check
       - name: Check workspace
         run: cargo check --workspace --all-targets
-      - name: Test supervisor Stage 3 gates
+      - name: Test workspace
+        run: cargo test --workspace
+
+  windows:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage3/cargo-executor
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply structured diagnostics fix
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
+          text = path.read_text()
+          old = '"--message-format=json-render-diagnostics".to_string(),'
+          new = '"--message-format=json".to_string(),'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Check supervisor on Windows
+        run: cargo check -p bevy-mcp-supervisor --all-targets
+      - name: Test supervisor on Windows
         run: cargo test -p bevy-mcp-supervisor --lib
-      - name: Commit validated fix and remove bootstrap
+
+  commit:
+    if: github.actor != 'github-actions[bot]'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage3/cargo-executor
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply validated fix and formatting
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
+          text = path.read_text()
+          old = '"--message-format=json-render-diagnostics".to_string(),'
+          new = '"--message-format=json".to_string(),'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+      - name: Format
+        run: cargo fmt --all
+      - name: Commit validated fix and remove workflow
         run: |
           rm .github/workflows/stage3-diagnostics-fix.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -- crates/bevy-mcp-supervisor/src/cargo_executor.rs .github/workflows/stage3-diagnostics-fix.yml
+          git add -- crates/bevy-mcp-supervisor/src/cargo_executor.rs crates/bevy-mcp-supervisor/src/cargo_executor_acceptance.rs .github/workflows/stage3-diagnostics-fix.yml
           git commit -m "Fix structured Cargo diagnostics"
           git push origin HEAD:stage3/cargo-executor
