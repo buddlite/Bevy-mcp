@@ -25,7 +25,7 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
       - name: Apply Stage 4 final source patches
-        run: python .github/stage4_apply.py
+        run: python -X utf8 .github/stage4_apply.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -44,7 +44,7 @@ jobs:
           ref: stage4/rebuild-restart
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply Stage 4 final source patches
-        run: python .github/stage4_apply.py
+        run: python -X utf8 .github/stage4_apply.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -64,7 +64,7 @@ jobs:
           ref: stage4/rebuild-restart
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply validated Stage 4 source patches
-        run: python .github/stage4_apply.py
+        run: python -X utf8 .github/stage4_apply.py
       - name: Format
         run: cargo fmt --all
       - name: Remove temporary validation files
