@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - stage3/cargo-executor
+  pull_request:
+    branches:
+      - v.01
 
 permissions:
   contents: write
