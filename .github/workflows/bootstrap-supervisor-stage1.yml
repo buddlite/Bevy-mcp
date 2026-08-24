@@ -34,6 +34,7 @@ jobs:
           python scripts/bootstrap_supervisor_stage1.py
           python scripts/fix_supervisor_stage1_status.py
           python scripts/fix_supervisor_stage1_entity_uris.py
+          python scripts/fix_supervisor_stage1_generation_tests.py
       - name: Format
         run: cargo fmt --all
       - name: Check workspace
@@ -49,11 +50,14 @@ jobs:
           grep -q 'STALE_INSTANCE' crates/bevy-mcp-host/src/entity_handle.rs
           grep -q 'HostProbe' crates/bevy-mcp-core/src/command.rs
           grep -q 'instance_id: String' crates/bevy-mcp-host/src/change_tracking.rs
+          grep -q 'pending_request_fails_immediately_when_connection_generation_disconnects' crates/bevy-mcp-supervisor/src/backend.rs
+          grep -q 'reconnect_after_transport_loss_gets_a_new_connection_generation' crates/bevy-mcp-supervisor/src/backend.rs
+          grep -q 'stale_generation_response_cannot_resolve_current_pending_request' crates/bevy-mcp-supervisor/src/backend.rs
       - name: Commit validated implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Cargo.toml Cargo.lock crates/bevy-mcp-core crates/bevy-mcp-host crates/bevy-mcp-server crates/bevy-mcp-supervisor
-          git rm -- scripts/bootstrap_supervisor_stage1.py scripts/fix_supervisor_stage1_status.py scripts/fix_supervisor_stage1_entity_uris.py .github/workflows/bootstrap-supervisor-stage1.yml
+          git rm -- scripts/bootstrap_supervisor_stage1.py scripts/fix_supervisor_stage1_status.py scripts/fix_supervisor_stage1_entity_uris.py scripts/fix_supervisor_stage1_generation_tests.py .github/workflows/bootstrap-supervisor-stage1.yml
           git commit -m "Implement supervisor foundation stage 1"
           git push origin HEAD:stage1/supervisor-foundation
