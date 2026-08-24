@@ -348,6 +348,30 @@ impl ProcessManager {
         self.launch_inner().await
     }
 
+    /// Launch the exact executable path reported by Cargo while preserving any
+    /// configured game args/current-dir/environment as a launch template.
+    /// When no explicit launch target was configured, the artifact is launched
+    /// directly with the supervisor's current working directory.
+    pub async fn launch_artifact(
+        &self,
+        executable: impl Into<PathBuf>,
+    ) -> Result<ProcessSnapshot, ProcessError> {
+        let _operation = self.try_lifecycle_operation()?;
+        let executable = executable.into();
+        let mut launch = self
+            .inner
+            .config
+            .launch
+            .clone()
+            .unwrap_or_else(|| LaunchSpec::new(executable.clone()));
+        launch.executable = executable;
+        self.launch_spec_inner(launch).await
+    }
+
+    pub fn has_configured_launch_target(&self) -> bool {
+        self.inner.config.launch.is_some()
+    }
+
     async fn launch_inner(&self) -> Result<ProcessSnapshot, ProcessError> {
         let launch = self.inner.config.launch.clone().ok_or_else(|| {
             ProcessError::new(
@@ -355,7 +379,10 @@ impl ProcessManager {
                 "No managed game executable was configured when the supervisor started",
             )
         })?;
+        self.launch_spec_inner(launch).await
+    }
 
+    async fn launch_spec_inner(&self, launch: LaunchSpec) -> Result<ProcessSnapshot, ProcessError> {
         if self.inner.child.lock().await.is_some() {
             return Err(ProcessError::new(
                 "PROCESS_ALREADY_RUNNING",

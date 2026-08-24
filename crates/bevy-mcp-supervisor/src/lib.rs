@@ -3,9 +3,12 @@ pub mod cargo_executor;
 pub mod permissions;
 pub mod process_manager;
 pub mod process_tools;
+pub mod rebuild_restart;
 
 #[cfg(test)]
 mod cargo_executor_acceptance;
+#[cfg(test)]
+mod stage4_acceptance;
 
 pub use backend::{
     HostState, ProcessObservation, SupervisorBackend, SupervisorSnapshot, SupervisorTransport,
@@ -21,3 +24,7 @@ pub use process_manager::{
     ProcessOwnership, ProcessSnapshot, ProcessState,
 };
 pub use process_tools::SupervisorMcpServer;
+pub use rebuild_restart::{
+    RebuildRestartCoordinator, RebuildRestartError, RebuildRestartEvidence, RebuildRestartFailure,
+    RebuildRestartSnapshot, RebuildRestartState,
+};

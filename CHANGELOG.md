@@ -19,6 +19,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Prevalidated atomic reflected mutation batches for `component_insert`, `component_update`, `component_remove`, and `resource_update`, with validating dry-run support.
 - Persistent supervisor transport and process lifecycle management, including authenticated game reconnection, instance/connection generations, frame-aware readiness, managed launch/stop/restart, bounded process logs, and cross-platform process-tree ownership.
 - Supervisor Cargo execution for `build_check`, `build`, and `test`, with `cargo metadata` target discovery, typed package/bin/profile/features/test-filter parameters, structured compiler diagnostics and executable artifacts, bounded output, asynchronous `supervisor:*` operation IDs, cancellation/timeouts, one-operation-at-a-time locking, and supervisor-local permissions.
+- Stage 4 supervised development-cycle tooling: asynchronous `rebuild_restart`, conservative check-before-stop sequencing, Cargo-artifact launch, new instance/connection validation, merged host/supervisor capabilities, and bounded startup/crash evidence.
 
 ### Changed
 
@@ -26,17 +27,18 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Front-page documentation now describes the live runtime surface instead of a fixed tool count.
 - Agent-facing mutation, interaction, assertion, debugging, and replay flows are documented around the loop `inspect -> mutate -> step/interact -> assert -> diagnose -> replay/checkpoint -> retry`.
 - In supervised mode, build/test and OS process lifecycle authority live in the persistent supervisor rather than the Bevy host; embedded mode retains the existing game-local permission boundary and externally owned lifecycle.
+- The supervised `capabilities` response now merges the live Bevy-host contract with supervisor Cargo, process, and `rebuild_restart` availability instead of exposing the embedded build/lifecycle contract unchanged.
 
 ### Current limitations
 
-- Embedded `build_check`, `build`, and `test` tools return `BUILD_NOT_AVAILABLE`; supervisor mode provides the Stage 3 Cargo executor instead.
+- Embedded `build_check`, `build`, and `test` tools return `BUILD_NOT_AVAILABLE`; supervisor mode provides the trusted Cargo executor instead.
 - `asset_list` is reserved; loaded-asset enumeration is not implemented.
 - Atomic batches intentionally exclude entity lifecycle, hierarchy changes, input/runtime operations, semantic actions, and arbitrary side effects. `verify` mode is not implemented.
 - Entity duplication remains reserved until safe reflected cloning is implemented.
 - Embedded runtime launch/stop/restart remain externally owned.
 - Generic `input_action` is not implemented; register semantic actions instead.
 - Checkpoint restoration covers only explicitly registered checkpoint state/adapters.
-- The Stage 4 `rebuild_restart` composite autonomous development cycle and full supervised-mode onboarding/documentation are not implemented yet.
+- Supervisor Cargo operations execute project build scripts/proc macros as trusted local development code; keep supervisor build permissions disabled for untrusted projects.
 
 ### Release history note
 
