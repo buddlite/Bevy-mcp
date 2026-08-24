@@ -1,0 +1,92 @@
+name: Stage 4 Validation
+
+on:
+  pull_request:
+    branches: [v.01]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage4/rebuild-restart
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply Stage 4 final source patches
+        run: python .github/stage4_apply.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Test workspace
+        run: cargo test --workspace
+
+  windows:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage4/rebuild-restart
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply Stage 4 final source patches
+        run: python .github/stage4_apply.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Check supervisor on Windows
+        run: cargo check -p bevy-mcp-supervisor --all-targets
+      - name: Test supervisor on Windows
+        run: cargo test -p bevy-mcp-supervisor --lib
+
+  commit:
+    if: github.actor != 'github-actions[bot]'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage4/rebuild-restart
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply validated Stage 4 source patches
+        run: python .github/stage4_apply.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Remove temporary validation files
+        run: rm .github/stage4_apply.py .github/workflows/stage4-validation.yml
+      - name: Commit validated Stage 4 changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            README.md \
+            CHANGELOG.md \
+            docs/supervised-mode.md \
+            crates/bevy-mcp-supervisor/src/lib.rs \
+            crates/bevy-mcp-supervisor/src/process_manager.rs \
+            crates/bevy-mcp-supervisor/src/process_tools.rs \
+            crates/bevy-mcp-supervisor/src/rebuild_restart.rs \
+            crates/bevy-mcp-supervisor/src/stage4_acceptance.rs \
+            .github/stage4_apply.py \
+            .github/workflows/stage4-validation.yml
+          if git diff --cached --quiet; then
+            echo "No validated changes to commit"
+          else
+            git commit -m "Finish Stage 4 autonomous rebuild/restart"
+            git push origin HEAD:stage4/rebuild-restart
+          fi
