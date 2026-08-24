@@ -4,22 +4,18 @@ on:
   push:
     branches:
       - stage2/process-manager
-  pull_request:
-    branches:
-      - v.01
 
 permissions:
   contents: write
 
 jobs:
-  integrate:
+  ubuntu-validate:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: stage2/process-manager
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Bevy Linux dependencies
         run: |
@@ -30,7 +26,9 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
       - name: Integrate Stage 2 sources
-        run: python scripts/bootstrap_supervisor_stage2.py
+        run: |
+          python scripts/prepare_supervisor_stage2.py
+          python scripts/bootstrap_supervisor_stage2.py
       - name: Format
         run: cargo fmt --all
       - name: Check workspace
@@ -50,12 +48,49 @@ jobs:
           grep -q 'SupervisorShutdownSignal' crates/bevy-mcp-host/src/supervisor_bridge.rs
           grep -q 'MessageWriter<AppExit>' crates/bevy-mcp-host/src/supervisor_bridge.rs
           grep -q 'process-windows:' .github/workflows/ci.yml
+          grep -q 'command-group' crates/bevy-mcp-supervisor/Cargo.toml
           ! grep -R 'Command::new.*sh\|Command::new.*cmd' crates/bevy-mcp-supervisor/src/process_manager.rs
+
+  windows-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage2/process-manager
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Integrate Stage 2 sources
+        run: |
+          python scripts/prepare_supervisor_stage2.py
+          python scripts/bootstrap_supervisor_stage2.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Check supervisor on Windows
+        run: cargo check -p bevy-mcp-supervisor --all-targets
+      - name: Test supervisor process lifecycle on Windows
+        run: cargo test -p bevy-mcp-supervisor --lib
+
+  commit:
+    if: github.actor != 'github-actions[bot]'
+    needs: [ubuntu-validate, windows-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage2/process-manager
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reproduce validated Stage 2 sources
+        run: |
+          python scripts/prepare_supervisor_stage2.py
+          python scripts/bootstrap_supervisor_stage2.py
+          cargo fmt --all
+          cargo generate-lockfile
       - name: Commit validated implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Cargo.lock .github/workflows/ci.yml crates/bevy-mcp-host crates/bevy-mcp-supervisor
-          git rm -- scripts/bootstrap_supervisor_stage2.py .github/workflows/bootstrap-supervisor-stage2.yml
+          git rm -- scripts/bootstrap_supervisor_stage2.py scripts/prepare_supervisor_stage2.py .github/workflows/bootstrap-supervisor-stage2.yml
           git commit -m "Implement supervisor process manager stage 2"
           git push origin HEAD:stage2/process-manager
