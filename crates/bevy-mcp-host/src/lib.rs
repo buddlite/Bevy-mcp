@@ -7,6 +7,7 @@ pub mod debugger;
 pub mod deferred;
 pub mod entity_handle;
 pub mod event_capture;
+pub mod instance;
 pub mod interaction;
 pub mod log_capture;
 pub mod operations;
@@ -15,6 +16,7 @@ pub mod plugin;
 pub mod queue;
 pub mod registry;
 pub mod schedule;
+pub mod supervisor_bridge;
 pub mod systems;
 
 pub use agent_api::{
@@ -26,3 +28,5 @@ pub use permissions::{McpPermissions, PermissionLevel};
 pub use plugin::BevyMcpPlugin;
 
 pub use checkpoint::{McpCheckpointRegistry, McpCheckpointStore, McpRecorder, RecordedAction};
+pub use instance::McpInstanceId;
+pub use supervisor_bridge::SupervisorBridgeConfig;

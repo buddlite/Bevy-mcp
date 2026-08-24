@@ -16,18 +16,18 @@ use rmcp::{ErrorData, handler::server::wrapper::Parameters, schemars, tool, tool
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::response_dispatcher::McpResponseDispatcher;
+use crate::backend::{SharedGameCommandBackend, format_backend_result};
 use crate::tools::{BevyMcpServer, BevyMcpState};
 
 #[derive(Clone)]
 struct AdvancedMcpState {
-    dispatcher: McpResponseDispatcher,
+    backend: SharedGameCommandBackend,
 }
 
 impl AdvancedMcpState {
     fn from_base(state: &BevyMcpState) -> Self {
         Self {
-            dispatcher: state.dispatcher.clone(),
+            backend: state.backend(),
         }
     }
 
@@ -42,14 +42,16 @@ impl AdvancedMcpState {
                 .to_string();
             }
         };
-        self.dispatcher
-            .call(
-                McpCommand::OperationStatus {
-                    operation_id: Some(operation_id),
-                },
-                std::time::Duration::from_secs(15),
-            )
-            .await
+        format_backend_result(
+            self.backend
+                .call(
+                    McpCommand::OperationStatus {
+                        operation_id: Some(operation_id),
+                    },
+                    std::time::Duration::from_secs(15),
+                )
+                .await,
+        )
     }
 }
 

@@ -10,6 +10,7 @@ use crate::checkpoint::{McpCheckpointRegistry, McpCheckpointStore, McpRecorder};
 use crate::debugger::{self, McpDebugger};
 use crate::deferred::DeferredMcpCommands;
 use crate::event_capture::EventCapture;
+use crate::instance::McpInstanceId;
 use crate::interaction::{self, McpInteractionState, mcp_pointer_id};
 use crate::log_capture::LogCapture;
 use crate::operations::OperationTracker;
@@ -17,6 +18,7 @@ use crate::permissions::McpPermissions;
 use crate::queue::{McpIngressQueue, McpResultQueue};
 use crate::registry::McpRegistry;
 use crate::schedule::{McpSchedulePlugin, McpSet};
+use crate::supervisor_bridge::{SupervisorBridgeConfig, spawn_supervisor_bridge};
 use crate::systems;
 
 /// The main Bevy plugin that bridges MCP and ECS.
@@ -35,6 +37,8 @@ pub struct BevyMcpPlugin {
     permissions: Option<McpPermissions>,
     event_capture: Option<EventCapture>,
     operation_tracker: Option<OperationTracker>,
+    instance_id: String,
+    supervisor_bridge: Option<SupervisorBridgeConfig>,
 }
 
 impl BevyMcpPlugin {
@@ -47,6 +51,8 @@ impl BevyMcpPlugin {
             permissions: None,
             event_capture: None,
             operation_tracker: None,
+            instance_id: "default".to_string(),
+            supervisor_bridge: None,
         }
     }
 
@@ -64,6 +70,22 @@ impl BevyMcpPlugin {
         self.ingress = Some(McpIngressQueue::from_core(ingress));
         self.results = Some(McpResultQueue::from_core(results));
         self
+    }
+
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
+        self
+    }
+
+    /// Explicitly enable the external supervisor bridge for this Bevy app.
+    pub fn with_supervisor_bridge(mut self, config: SupervisorBridgeConfig) -> Self {
+        self.instance_id = config.instance_id.clone();
+        self.supervisor_bridge = Some(config);
+        self
+    }
+
+    pub fn with_supervisor_bridge_from_env(self) -> Result<Self, String> {
+        Ok(self.with_supervisor_bridge(SupervisorBridgeConfig::from_env()?))
     }
 
     /// Set the log capture instance for the `logs` tool.
@@ -103,8 +125,18 @@ impl Plugin for BevyMcpPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(McpSchedulePlugin);
 
-        app.insert_resource(self.ingress.clone().unwrap_or_default());
-        app.insert_resource(self.results.clone().unwrap_or_default());
+        let ingress = self.ingress.clone().unwrap_or_default();
+        let results = self.results.clone().unwrap_or_default();
+        app.insert_resource(ingress.clone());
+        app.insert_resource(results.clone());
+        app.insert_resource(McpInstanceId::new(self.instance_id.clone()));
+        if let Some(config) = self.supervisor_bridge.clone() {
+            if let Err(error) =
+                spawn_supervisor_bridge(config, ingress.inner().clone(), results.inner().clone())
+            {
+                tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
+            }
+        }
         app.insert_resource(McpRegistry::new(&self.bevy_version));
         app.insert_resource(DeferredMcpCommands::default());
         app.insert_resource(

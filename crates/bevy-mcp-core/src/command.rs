@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::entity_handle::EntityHandle;
@@ -5,7 +6,8 @@ use crate::entity_handle::EntityHandle;
 /// A command from the MCP server, using raw entity IDs.
 ///
 /// The host crate converts these to Bevy `Entity` values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", content = "payload", rename_all = "snake_case")]
 pub enum McpCommand {
     // -- ECS inspection --
     WorldSummary,
@@ -63,6 +65,10 @@ pub enum McpCommand {
     },
 
     // -- Runtime --
+    /// Internal supervisor readiness probe. It is acknowledged only after the Bevy ingress path runs.
+    HostProbe {
+        probe_id: u64,
+    },
     RuntimeLaunch,
     RuntimeStop,
     RuntimeRestart,
@@ -258,7 +264,8 @@ pub enum McpCommand {
 }
 
 /// A reflected ECS/resource mutation that can participate in an atomic batch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", content = "payload", rename_all = "snake_case")]
 pub enum MutationOperation {
     ComponentInsert {
         entity: EntityHandle,
@@ -281,7 +288,8 @@ pub enum MutationOperation {
 }
 
 /// A single step in a playtest scenario.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "step", content = "payload", rename_all = "snake_case")]
 pub enum PlaytestStep {
     RuntimeRestart,
     RuntimeStep {
@@ -308,7 +316,8 @@ pub enum PlaytestStep {
 }
 
 /// An assertion to verify game state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "assertion", content = "payload", rename_all = "snake_case")]
 pub enum Assertion {
     EntityExists {
         entity_id: u32,
@@ -334,13 +343,14 @@ pub enum Assertion {
 }
 
 /// Response from the Bevy host back to the MCP server.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpResponse {
     pub request_id: u64,
     pub result: McpResult,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", content = "payload", rename_all = "snake_case")]
 pub enum McpResult {
     Success(Value),
     Error { code: String, message: String },

@@ -7,11 +7,14 @@ use bevy_mcp_core::command::{McpCommand, McpResult};
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use tokio::sync::oneshot;
 
-/// A single response pump shared by every MCP surface.
-///
-/// Requesters register a one-shot sender before pushing their command. The pump is the
-/// only consumer of `McpResultQueue`, so legacy, advanced, and debugger calls can all be
-/// in flight concurrently without stealing one another's responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchError {
+    Disconnected,
+    Closed,
+    Timeout,
+}
+
+/// A single response pump shared by every embedded MCP surface.
 #[derive(Clone)]
 pub struct McpResponseDispatcher {
     ingress: McpIngressQueue,
@@ -38,13 +41,13 @@ impl McpResponseDispatcher {
         }
     }
 
-    pub async fn call(&self, command: McpCommand, timeout: Duration) -> String {
+    pub async fn call_result(
+        &self,
+        command: McpCommand,
+        timeout: Duration,
+    ) -> Result<McpResult, DispatchError> {
         if !self.connected.load(Ordering::Relaxed) {
-            return serde_json::json!({
-                "error": "RUNTIME_NOT_RUNNING",
-                "message": "No embedded Bevy application is connected."
-            })
-            .to_string();
+            return Err(DispatchError::Disconnected);
         }
 
         self.ensure_pump();
@@ -54,23 +57,36 @@ impl McpResponseDispatcher {
         self.ingress.push(request_id, command);
 
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => format_result(result),
+            Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => {
                 self.waiters.lock().unwrap().remove(&request_id);
-                serde_json::json!({
-                    "error": "RESPONSE_DISPATCHER_CLOSED",
-                    "message": "The MCP response dispatcher closed before a result was delivered"
-                })
-                .to_string()
+                Err(DispatchError::Closed)
             }
             Err(_) => {
                 self.waiters.lock().unwrap().remove(&request_id);
-                serde_json::json!({
-                    "error": "TIMEOUT",
-                    "message": format!("Bevy app did not respond within {:.1} seconds", timeout.as_secs_f64())
-                })
-                .to_string()
+                Err(DispatchError::Timeout)
             }
+        }
+    }
+
+    pub async fn call(&self, command: McpCommand, timeout: Duration) -> String {
+        match self.call_result(command, timeout).await {
+            Ok(result) => format_result(result),
+            Err(DispatchError::Disconnected) => serde_json::json!({
+                "error": "RUNTIME_NOT_RUNNING",
+                "message": "No embedded Bevy application is connected."
+            })
+            .to_string(),
+            Err(DispatchError::Closed) => serde_json::json!({
+                "error": "RESPONSE_DISPATCHER_CLOSED",
+                "message": "The MCP response dispatcher closed before a result was delivered"
+            })
+            .to_string(),
+            Err(DispatchError::Timeout) => serde_json::json!({
+                "error": "TIMEOUT",
+                "message": format!("Bevy app did not respond within {:.1} seconds", timeout.as_secs_f64())
+            })
+            .to_string(),
         }
     }
 

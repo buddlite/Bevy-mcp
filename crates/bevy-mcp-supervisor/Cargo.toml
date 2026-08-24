@@ -1,31 +1,36 @@
 [package]
-name = "bevy-mcp-server"
+name = "bevy-mcp-supervisor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "MCP server for the Bevy game engine — enables AI agents to inspect, mutate, and control running Bevy applications"
+description = "Persistent supervisor control plane for bevy-mcp"
 rust-version = "1.85"
 
 [lib]
-name = "bevy_mcp_server"
+name = "bevy_mcp_supervisor"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bevy-mcp-embedded"
+name = "bevy-mcp"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
 bevy-mcp-core = { version = "0.1", path = "../bevy-mcp-core" }
+bevy-mcp-server = { version = "0.1", path = "../bevy-mcp-server" }
 rmcp = { version = "3", features = ["server", "transport-io"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+bevy = { version = "0.19", default-features = false }
+bevy-mcp-host = { version = "0.1", path = "../bevy-mcp-host" }

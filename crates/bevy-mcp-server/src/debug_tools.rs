@@ -16,18 +16,18 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::advanced_tools::{AdvancedEntityQueryParams, UnifiedBevyMcpServer};
-use crate::response_dispatcher::McpResponseDispatcher;
+use crate::backend::{SharedGameCommandBackend, format_backend_result};
 use crate::tools::BevyMcpState;
 
 #[derive(Clone)]
 struct DebugMcpState {
-    dispatcher: McpResponseDispatcher,
+    backend: SharedGameCommandBackend,
 }
 
 impl DebugMcpState {
     fn from_base(state: &BevyMcpState) -> Self {
         Self {
-            dispatcher: state.dispatcher.clone(),
+            backend: state.backend(),
         }
     }
 
@@ -42,14 +42,16 @@ impl DebugMcpState {
                 .to_string();
             }
         };
-        self.dispatcher
-            .call(
-                McpCommand::OperationStatus {
-                    operation_id: Some(operation_id),
-                },
-                std::time::Duration::from_secs(5),
-            )
-            .await
+        format_backend_result(
+            self.backend
+                .call(
+                    McpCommand::OperationStatus {
+                        operation_id: Some(operation_id),
+                    },
+                    std::time::Duration::from_secs(5),
+                )
+                .await,
+        )
     }
 }
 

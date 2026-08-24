@@ -256,7 +256,7 @@ pub(crate) fn entity_query(
             })
             .collect();
         entities.push(json!({
-            "handle": entity_to_uri(entity),
+            "handle": entity_to_uri(world, entity),
             "id": entity.index().index(),
             "included_components": included_components,
         }));
@@ -290,7 +290,7 @@ pub(crate) fn entity_get(
     }
 
     McpResult::success(json!({
-        "handle": entity_to_uri(entity),
+        "handle": entity_to_uri(world, entity),
         "id": entity.index().index(),
         "components": components,
     }))
@@ -482,7 +482,7 @@ pub(crate) fn hierarchy(
     fn build_tree(world: &World, entity: Entity, depth: u32, max_depth: u32) -> serde_json::Value {
         if depth >= max_depth {
             return json!({
-                "handle": entity_to_uri(entity),
+                "handle": entity_to_uri(world, entity),
                 "id": entity.index().index(),
                 "children": [],
                 "truncated": true,
@@ -500,7 +500,7 @@ pub(crate) fn hierarchy(
         };
 
         json!({
-            "handle": entity_to_uri(entity),
+            "handle": entity_to_uri(world, entity),
             "id": entity.index().index(),
             "children": children,
         })

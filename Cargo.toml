@@ -4,6 +4,7 @@ members = [
     "crates/bevy-mcp-core",
     "crates/bevy-mcp-host",
     "crates/bevy-mcp-server",
+    "crates/bevy-mcp-supervisor",
     "examples/e2e",
 ]
 

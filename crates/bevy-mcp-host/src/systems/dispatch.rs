@@ -13,7 +13,7 @@ use super::*;
 
 pub(crate) fn command_allowed(command: &McpCommand, permissions: &McpPermissions) -> bool {
     match command {
-        McpCommand::Capabilities => true,
+        McpCommand::Capabilities | McpCommand::HostProbe { .. } => true,
         McpCommand::EntitySpawn { .. }
         | McpCommand::EntityDespawn { .. }
         | McpCommand::ComponentInsert { .. }
@@ -68,6 +68,14 @@ pub fn ingress_system(world: &mut World) {
     };
 
     for entry in entries {
+        if let Some(result) = validate_command_entity_handles(world, &entry.command) {
+            world.resource::<McpResultQueue>().push(McpResponse {
+                request_id: entry.request_id,
+                result,
+            });
+            continue;
+        }
+
         let allowed = {
             let permissions = world.resource::<McpPermissions>();
             command_allowed(&entry.command, permissions)
@@ -402,7 +410,7 @@ pub fn deferred_apply_system(world: &mut World) {
                 world.resource::<McpResultQueue>().push(McpResponse {
                     request_id: result_id,
                     result: McpResult::success(json!({
-                        "handle": entity_to_uri(entity),
+                        "handle": entity_to_uri(world, entity),
                         "id": entity.index().index(),
                         "components": inserted,
                     })),
@@ -711,6 +719,11 @@ pub(crate) fn execute_command(
     match command {
         McpCommand::WorldSummary => world_summary(world),
         McpCommand::Capabilities => capabilities(world),
+        McpCommand::HostProbe { probe_id } => McpResult::success(json!({
+            "probe_id": probe_id,
+            "instance_id": world.resource::<crate::instance::McpInstanceId>().as_str(),
+            "frame": registry.frame,
+        })),
         McpCommand::WorldContextScan => world_context_scan(world, registry),
         McpCommand::EntityQuery {
             with_components,
@@ -847,5 +860,32 @@ pub(crate) fn execute_command(
             "INTERNAL",
             format!("EntityDuplicate should be deferred (entity={entity})"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod supervisor_stage1_tests {
+    use super::*;
+    use crate::instance::McpInstanceId;
+
+    #[test]
+    fn host_probe_is_acknowledged_by_normal_command_execution() {
+        let mut world = World::new();
+        world.insert_resource(McpInstanceId::new("run-test"));
+        let mut registry = McpRegistry::new("0.19.1");
+        registry.frame = 41;
+        let result = execute_command(
+            &world,
+            &McpCommand::HostProbe { probe_id: 7 },
+            &mut registry,
+        );
+        match result {
+            McpResult::Success(value) => {
+                assert_eq!(value["probe_id"], 7);
+                assert_eq!(value["instance_id"], "run-test");
+                assert_eq!(value["frame"], 41);
+            }
+            other => panic!("expected successful probe, got {other:?}"),
+        }
     }
 }

@@ -444,11 +444,13 @@ pub(crate) fn entity_reparent(
             entity_ref.insert(ChildOf(parent));
         }
         McpResult::success(json!({
-            "reparented": entity_to_uri(entity),
-            "new_parent": entity_to_uri(parent)
+            "reparented": entity_to_uri(world, entity),
+            "new_parent": entity_to_uri(world, parent)
         }))
     } else {
-        McpResult::success(json!({ "reparented": entity_to_uri(entity), "new_parent": null }))
+        McpResult::success(
+            json!({ "reparented": entity_to_uri(world, entity), "new_parent": null }),
+        )
     }
 }
 

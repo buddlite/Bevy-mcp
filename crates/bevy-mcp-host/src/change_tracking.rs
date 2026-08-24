@@ -6,7 +6,8 @@ use bevy::ecs::resource::IsResource;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 
-use crate::entity_handle::entity_to_uri;
+use crate::entity_handle::entity_to_uri_for_instance;
+use crate::instance::McpInstanceId;
 use crate::registry::McpRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +58,9 @@ pub struct ComponentChangeRecord {
 }
 
 impl ComponentChangeRecord {
-    pub fn as_json(&self) -> Value {
+    pub fn as_json(&self, instance_id: &str) -> Value {
         json!({
-            "entity": entity_to_uri(self.entity),
+            "entity": entity_to_uri_for_instance(instance_id, self.entity),
             "component": self.component,
             "kind": self.kind.as_str(),
         })
@@ -81,6 +82,7 @@ impl ResourceChangeRecord {
 #[derive(Debug, Clone, Default)]
 pub struct FrameChanges {
     pub frame: u64,
+    pub instance_id: String,
     pub spawned: Vec<Entity>,
     pub despawned: Vec<Entity>,
     pub components: Vec<ComponentChangeRecord>,
@@ -123,6 +125,7 @@ pub struct WorldChangeTracker {
     exclude_resources: HashSet<String>,
     dynamic_components: HashSet<String>,
     dynamic_resources: HashSet<String>,
+    instance_id: String,
 }
 
 impl Default for WorldChangeTracker {
@@ -142,6 +145,7 @@ impl Default for WorldChangeTracker {
             exclude_resources: HashSet::new(),
             dynamic_components: HashSet::new(),
             dynamic_resources: HashSet::new(),
+            instance_id: "default".to_string(),
         }
     }
 }
@@ -314,34 +318,34 @@ impl WorldChangeTracker {
             for current in &entry.spawned {
                 if entity.is_none_or(|wanted| wanted == *current) {
                     spawned
-                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
+                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri_for_instance(&entry.instance_id, *current) }));
                 }
             }
             for current in &entry.despawned {
                 if entity.is_none_or(|wanted| wanted == *current) {
                     despawned
-                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri(*current) }));
+                        .push(json!({ "frame": entry.frame, "entity": entity_to_uri_for_instance(&entry.instance_id, *current) }));
                 }
             }
             for change in &entry.components {
                 if entity.is_none_or(|wanted| wanted == change.entity) {
                     components.push(json!({
                         "frame": entry.frame,
-                        "entity": entity_to_uri(change.entity),
+                        "entity": entity_to_uri_for_instance(&entry.instance_id, change.entity),
                         "component": change.component,
                         "kind": change.kind.as_str(),
                     }));
                 }
             }
         }
-        json!({ "since_frame": frame, "entity": entity.map(entity_to_uri), "spawned": spawned, "despawned": despawned, "components": components })
+        json!({ "since_frame": frame, "entity": entity.map(|entity| entity_to_uri_for_instance(&self.instance_id, entity)), "spawned": spawned, "despawned": despawned, "components": components })
     }
 
     pub fn component_changes_since(&self, frame: u64, component: Option<&str>) -> Value {
         let changes: Vec<Value> = self.history.iter().filter(|e| e.frame > frame).flat_map(|entry| {
             entry.components.iter().filter_map(move |change| {
                 if component.is_none_or(|wanted| component_name_matches(&change.component, wanted)) {
-                    Some(json!({ "frame": entry.frame, "entity": entity_to_uri(change.entity), "component": change.component, "kind": change.kind.as_str() }))
+                    Some(json!({ "frame": entry.frame, "entity": entity_to_uri_for_instance(&entry.instance_id, change.entity), "component": change.component, "kind": change.kind.as_str() }))
                 } else { None }
             })
         }).collect();
@@ -378,9 +382,16 @@ pub fn track_world_changes(world: &mut World) {
         .get_resource::<McpRegistry>()
         .map(|r| r.frame)
         .unwrap_or_default();
+    let instance_id = world
+        .get_resource::<McpInstanceId>()
+        .map(McpInstanceId::as_str)
+        .unwrap_or("default")
+        .to_string();
+    tracker.instance_id = instance_id.clone();
     let mut current_entities = HashMap::new();
     let mut changes = FrameChanges {
         frame,
+        instance_id,
         ..Default::default()
     };
 
@@ -523,9 +534,10 @@ pub fn track_world_changes(world: &mut World) {
 fn frame_changes_json(entry: &FrameChanges) -> Value {
     json!({
         "frame": entry.frame,
-        "spawned": entry.spawned.iter().copied().map(entity_to_uri).collect::<Vec<_>>(),
-        "despawned": entry.despawned.iter().copied().map(entity_to_uri).collect::<Vec<_>>(),
-        "components": entry.components.iter().map(ComponentChangeRecord::as_json).collect::<Vec<_>>(),
+        "instance_id": entry.instance_id,
+        "spawned": entry.spawned.iter().copied().map(|entity| entity_to_uri_for_instance(&entry.instance_id, entity)).collect::<Vec<_>>(),
+        "despawned": entry.despawned.iter().copied().map(|entity| entity_to_uri_for_instance(&entry.instance_id, entity)).collect::<Vec<_>>(),
+        "components": entry.components.iter().map(|change| change.as_json(&entry.instance_id)).collect::<Vec<_>>(),
         "resources": entry.resources.iter().map(ResourceChangeRecord::as_json).collect::<Vec<_>>(),
     })
 }
