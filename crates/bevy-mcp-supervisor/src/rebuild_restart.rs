@@ -11,7 +11,9 @@ use crate::cargo_executor::{
     CargoError, CargoExecutor, CargoInvocation, CargoOperationSnapshot, CargoOperationState,
 };
 use crate::permissions::SupervisorPermissions;
-use crate::process_manager::{ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState};
+use crate::process_manager::{
+    ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -279,7 +281,10 @@ impl RebuildRestartCoordinator {
             return;
         }
 
-        let check = match self.start_and_wait_cargo(&operation_id, false, invocation.clone()).await {
+        let check = match self
+            .start_and_wait_cargo(&operation_id, false, invocation.clone())
+            .await
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.finish_error(&operation_id, "check", error);
@@ -328,7 +333,8 @@ impl RebuildRestartCoordinator {
                     record.snapshot.evidence.stopped_process = Some(stopped);
                 }),
                 Err(error) => {
-                    self.finish_process_failure(&operation_id, "stop", error);
+                    self.finish_process_failure(&operation_id, "stop", error)
+                        .await;
                     return;
                 }
             }
@@ -345,7 +351,10 @@ impl RebuildRestartCoordinator {
         self.update(&operation_id, |record| {
             record.snapshot.state = RebuildRestartState::Building;
         });
-        let build = match self.start_and_wait_cargo(&operation_id, true, invocation).await {
+        let build = match self
+            .start_and_wait_cargo(&operation_id, true, invocation)
+            .await
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.finish_error(&operation_id, "build", error);
@@ -356,7 +365,10 @@ impl RebuildRestartCoordinator {
             record.snapshot.evidence.build = Some(build.clone());
         });
         if self.cancel_requested(&operation_id) || build.state == CargoOperationState::Cancelled {
-            self.finish_cancelled(&operation_id, "Cancelled while building the replacement game");
+            self.finish_cancelled(
+                &operation_id,
+                "Cancelled while building the replacement game",
+            );
             return;
         }
         if build.state != CargoOperationState::Succeeded {
@@ -414,7 +426,8 @@ impl RebuildRestartCoordinator {
         {
             Ok(process) => process,
             Err(error) => {
-                self.finish_process_failure(&operation_id, "launch", error);
+                self.finish_process_failure(&operation_id, "launch", error)
+                    .await;
                 return;
             }
         };
@@ -533,10 +546,12 @@ impl RebuildRestartCoordinator {
             .failure
             .as_ref()
             .map(|failure| (failure.code.clone(), failure.message.clone()))
-            .unwrap_or_else(|| (
-                "BUILD_FAILED".to_string(),
-                format!("Cargo {stage} did not succeed"),
-            ));
+            .unwrap_or_else(|| {
+                (
+                    "BUILD_FAILED".to_string(),
+                    format!("Cargo {stage} did not succeed"),
+                )
+            });
         self.finish_failure(
             operation_id,
             &code,
@@ -546,7 +561,8 @@ impl RebuildRestartCoordinator {
         );
     }
 
-    fn finish_process_failure(&self, operation_id: &str, stage: &str, error: ProcessError) {
+    async fn finish_process_failure(&self, operation_id: &str, stage: &str, error: ProcessError) {
+        let process = self.inner.manager.status().await;
         let mut details = error.details.clone();
         if !details.is_object() {
             details = json!({ "process_error_details": details });
@@ -554,27 +570,40 @@ impl RebuildRestartCoordinator {
         if let Some(object) = details.as_object_mut() {
             object.insert(
                 "process".to_string(),
+                serde_json::to_value(process).unwrap_or(Value::Null),
+            );
+            object.insert(
+                "stderr_tail".to_string(),
                 serde_json::to_value(
-                    tokio::runtime::Handle::current().block_on(self.inner.manager.status()),
+                    self.inner
+                        .manager
+                        .logs(Some("stderr"), 50)
+                        .unwrap_or_default(),
                 )
                 .unwrap_or(Value::Null),
             );
             object.insert(
-                "stderr_tail".to_string(),
-                serde_json::to_value(self.inner.manager.logs(Some("stderr"), 50).unwrap_or_default())
-                    .unwrap_or(Value::Null),
-            );
-            object.insert(
                 "stdout_tail".to_string(),
-                serde_json::to_value(self.inner.manager.logs(Some("stdout"), 50).unwrap_or_default())
-                    .unwrap_or(Value::Null),
+                serde_json::to_value(
+                    self.inner
+                        .manager
+                        .logs(Some("stdout"), 50)
+                        .unwrap_or_default(),
+                )
+                .unwrap_or(Value::Null),
             );
         }
         self.finish_failure(operation_id, error.code, &error.message, stage, details);
     }
 
     fn finish_error(&self, operation_id: &str, stage: &str, error: RebuildRestartError) {
-        self.finish_failure(operation_id, error.code, &error.message, stage, error.details);
+        self.finish_failure(
+            operation_id,
+            error.code,
+            &error.message,
+            stage,
+            error.details,
+        );
     }
 
     fn finish_failure(

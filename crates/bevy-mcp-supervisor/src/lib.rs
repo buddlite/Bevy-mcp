@@ -25,6 +25,6 @@ pub use process_manager::{
 };
 pub use process_tools::SupervisorMcpServer;
 pub use rebuild_restart::{
-    RebuildRestartCoordinator, RebuildRestartError, RebuildRestartEvidence,
-    RebuildRestartFailure, RebuildRestartSnapshot, RebuildRestartState,
+    RebuildRestartCoordinator, RebuildRestartError, RebuildRestartEvidence, RebuildRestartFailure,
+    RebuildRestartSnapshot, RebuildRestartState,
 };

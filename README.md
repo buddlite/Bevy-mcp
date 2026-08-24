@@ -19,7 +19,7 @@ run assertions and agent playtests, capture runtime evidence, and debug what cha
 
 ## What bevy-mcp is
 
-bevy-mcp embeds an MCP host directly in your Bevy application and exposes the live world to an MCP-compatible coding agent. The client still talks MCP over stdio, but ECS reads, deferred mutations, debugging state, input injection, and runtime control are handled inside the game process instead of through an external engine bridge.
+bevy-mcp supports two execution modes over the same MCP tool model. **Embedded mode** keeps the MCP server and Bevy host in one process for direct runtime inspection/control. **Supervised mode** keeps a persistent `bevy-mcp` control-plane process alive while game binaries rebuild and restart underneath it, so a coding agent can survive compile errors, crashes, and process replacement without losing its MCP session.
 
 The goal is not just inspection. The current tool surface supports a practical autonomous development loop:
 
@@ -108,7 +108,7 @@ Inspect known asset paths, including active asset IDs, runtime type information,
 
 ### Runtime capability contract
 
-Call `capabilities` to get the live host contract. It reports whether a feature is implemented, currently available in this app/runtime, and allowed by the active permission level. Agents should prefer this over assuming that every registered MCP tool is usable in every game configuration.
+Call `capabilities` to get the live contract. In embedded mode it reports the Bevy-host surface. In supervised mode the persistent supervisor merges that host contract with Cargo/build permissions, managed-process lifecycle state, and `rebuild_restart` availability. Agents should prefer this over assuming that every registered MCP tool is usable in every game configuration.
 
 ---
 
@@ -116,7 +116,7 @@ Call `capabilities` to get the live host contract. It reports whether a feature 
 
 The front page intentionally distinguishes registered tools from capabilities that are actually available today:
 
-- **Embedded build tools are disabled.** `build_check`, `build`, and `test` return `BUILD_NOT_AVAILABLE`; run Cargo commands from a trusted development shell.
+- **Build tools are mode-dependent.** Embedded `build_check`, `build`, and `test` remain unavailable; supervised mode owns trusted Cargo execution and the composite `rebuild_restart` development cycle.
 - **Loaded-asset enumeration is not implemented.** `asset_list` is reserved; use known-path inspection with `asset_get` / `asset_status`.
 - **Atomic batch scope is intentionally narrow.** Atomic mode currently accepts reflected `component_insert`, `component_update`, `component_remove`, and `resource_update`. Entity lifecycle, hierarchy changes, runtime/input operations, semantic actions, and other arbitrary side effects are not transaction members. `verify` mode remains unavailable.
 - **Entity duplication is reserved.** Safe reflected component cloning is not implemented yet.
@@ -202,6 +202,26 @@ The exact configuration file differs by client, but the transport pattern is the
 
 ---
 
+## Supervised mode for autonomous development
+
+For coding agents that need to edit Rust, compile, relaunch, and continue interacting with the new game process, use the persistent supervisor rather than making the game binary itself the MCP stdio server.
+
+The intended loop is:
+
+```text
+edit source -> rebuild_restart -> cargo check while old game stays live
+                              -> stop old game only after check passes
+                              -> cargo build -> launch Cargo-reported artifact
+                              -> authenticated reconnect -> host probe -> ready
+                              -> inspect/interact/assert/debug
+```
+
+`rebuild_restart` is asynchronous and returns a `supervisor:rebuild_restart:*` operation ID. Poll it with `operation_status`; use `process_evidence` for bounded stdout/stderr plus process state when startup or runtime failures need diagnosis. A failed preflight check leaves the old managed game untouched. A build failure after the stop phase deliberately leaves the game stopped rather than relaunching stale code.
+
+See **[Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md)** for game instrumentation, MCP client configuration, zero-config target discovery, lifecycle permissions, failure semantics, and troubleshooting.
+
+---
+
 ## How it works
 
 1. **Your game embeds `BevyMcpPlugin`.** The host plugin runs inside the Bevy process and owns ECS-facing inspection, mutation, input, debugging, and runtime integration.
@@ -239,11 +259,12 @@ The exact configuration file differs by client, but the transport pattern is the
 └──────────────────────────────────────────────────────┘
 ```
 
-The workspace is split into three crates:
+The workspace is split into four crates:
 
 - **`bevy-mcp-core`** — shared protocol types, commands, entity handles, queues, and debug/advanced request models; no Bevy dependency.
 - **`bevy-mcp-server`** — MCP routers and stdio-facing server surface; no Bevy dependency.
 - **`bevy-mcp-host`** — the Bevy plugin and runtime integration layer.
+- **`bevy-mcp-supervisor`** — the persistent control plane for authenticated game reconnection, Cargo execution, process ownership, evidence capture, and `rebuild_restart`.
 
 ---
 

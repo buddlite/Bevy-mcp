@@ -246,7 +246,10 @@ async fn wait_cargo(executor: &CargoExecutor, operation_id: &str) -> CargoOperat
         ) {
             return snapshot;
         }
-        assert!(Instant::now() < deadline, "Cargo operation timed out in test");
+        assert!(
+            Instant::now() < deadline,
+            "Cargo operation timed out in test"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -281,9 +284,12 @@ async fn wait_rebuild(
 
 async fn manager() -> (SupervisorTransport, ProcessManager) {
     let token = format!("stage4-secret-{}", Uuid::new_v4());
-    let transport = SupervisorTransport::bind(format!("stage4-bootstrap-{}", Uuid::new_v4()), token.clone())
-        .await
-        .unwrap();
+    let transport = SupervisorTransport::bind(
+        format!("stage4-bootstrap-{}", Uuid::new_v4()),
+        token.clone(),
+    )
+    .await
+    .unwrap();
     let manager = ProcessManager::new(
         transport.backend(),
         transport.address(),
@@ -300,10 +306,7 @@ async fn manager() -> (SupervisorTransport, ProcessManager) {
     (transport, manager)
 }
 
-async fn build_and_launch(
-    executor: &CargoExecutor,
-    manager: &ProcessManager,
-) -> ProcessSnapshot {
+async fn build_and_launch(executor: &CargoExecutor, manager: &ProcessManager) -> ProcessSnapshot {
     let build = executor.start_build(invocation()).unwrap();
     let build = wait_cargo(executor, &build.operation_id).await;
     assert_eq!(build.state, CargoOperationState::Succeeded);
@@ -331,7 +334,11 @@ async fn rebuild_restart_rotates_identity_and_launches_cargo_artifact() {
         SupervisorPermissions::full(),
     );
     let operation = coordinator.start(invocation()).unwrap();
-    assert!(operation.operation_id.starts_with("supervisor:rebuild_restart:"));
+    assert!(
+        operation
+            .operation_id
+            .starts_with("supervisor:rebuild_restart:")
+    );
     let result = wait_rebuild(&coordinator, &operation.operation_id).await;
 
     assert_eq!(result.state, RebuildRestartState::Succeeded);

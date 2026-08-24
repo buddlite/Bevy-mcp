@@ -16,7 +16,9 @@ use serde_json::{Map, Value, json};
 
 use crate::cargo_executor::{CargoError, CargoExecutor, CargoInvocation};
 use crate::permissions::SupervisorPermissions;
-use crate::process_manager::{ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState};
+use crate::process_manager::{
+    ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState,
+};
 use crate::rebuild_restart::RebuildRestartCoordinator;
 
 fn format_process_error(error: ProcessError) -> String {
@@ -107,9 +109,15 @@ pub(crate) fn merge_supervisor_capabilities(
         permission_object.insert("cargo_check".to_string(), json!(permissions.cargo_check));
         permission_object.insert("cargo_build".to_string(), json!(permissions.cargo_build));
         permission_object.insert("cargo_test".to_string(), json!(permissions.cargo_test));
-        permission_object.insert("process_launch".to_string(), json!(permissions.process_launch));
+        permission_object.insert(
+            "process_launch".to_string(),
+            json!(permissions.process_launch),
+        );
         permission_object.insert("process_stop".to_string(), json!(permissions.process_stop));
-        permission_object.insert("process_restart".to_string(), json!(permissions.process_restart));
+        permission_object.insert(
+            "process_restart".to_string(),
+            json!(permissions.process_restart),
+        );
     }
 
     {
@@ -497,7 +505,10 @@ impl SupervisorToolServer {
         &self,
         Parameters(params): Parameters<OperationCancelParams>,
     ) -> String {
-        if params.operation_id.starts_with("supervisor:rebuild_restart:") {
+        if params
+            .operation_id
+            .starts_with("supervisor:rebuild_restart:")
+        {
             return match self.rebuild.cancel(&params.operation_id).await {
                 Ok(operation) => serde_json::to_string(&operation).unwrap(),
                 Err(error) => error.to_json().to_string(),
