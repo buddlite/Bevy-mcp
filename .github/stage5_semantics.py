@@ -84,6 +84,67 @@ fn generation(
     process: &ProcessSnapshot,
 ''',
 )
+
+# A stage-specific failure is more useful to an agent than the generic process
+# state. In particular, a replacement that exits before host readiness is a
+# startup failure even though ProcessManager records the process as crashed.
+replace_once(
+    path,
+    '''    if process.ownership == ProcessOwnership::External {
+        return DevelopmentState::ExternalGame;
+    }
+    if process.state == ProcessState::Crashed {
+        return DevelopmentState::GameCrashed;
+    }
+    if process.host == "unresponsive" {
+        return DevelopmentState::HostUnresponsive;
+    }
+    if process.state == ProcessState::Starting {
+        return DevelopmentState::Starting;
+    }
+
+    if let Some(failure) = failure {
+''',
+    '''    if process.ownership == ProcessOwnership::External {
+        return DevelopmentState::ExternalGame;
+    }
+    if process.host == "unresponsive" {
+        return DevelopmentState::HostUnresponsive;
+    }
+    if process.state == ProcessState::Starting {
+        return DevelopmentState::Starting;
+    }
+
+    if let Some(failure) = failure {
+''',
+)
+replace_once(
+    path,
+    '''        if matches!(failure.stage.as_deref(), Some("launch"))
+            || failure.code.starts_with("PROCESS_START")
+            || failure.code == "PROCESS_EXITED_DURING_STARTUP"
+        {
+            return DevelopmentState::StartupFailed;
+        }
+    }
+
+    if process.state == ProcessState::Running && process.host == "ready" {
+''',
+    '''        if matches!(failure.stage.as_deref(), Some("launch"))
+            || failure.code.starts_with("PROCESS_START")
+            || failure.code == "PROCESS_EXITED_DURING_STARTUP"
+        {
+            return DevelopmentState::StartupFailed;
+        }
+    }
+
+    if process.state == ProcessState::Crashed {
+        return DevelopmentState::GameCrashed;
+    }
+    if process.state == ProcessState::Running && process.host == "ready" {
+''',
+)
+
 replace_once(
     path,
     '''    #[test]
@@ -121,5 +182,36 @@ replace_once(
 
     #[test]
     fn active_rebuild_takes_precedence_over_old_failure() {
+''',
+)
+replace_once(
+    path,
+    '''        let status = compose_status(
+            process(ProcessState::Stopped, "waiting"),
+            true,
+            None,
+            false,
+            SupervisorPermissions::full(),
+            Vec::new(),
+            vec![rebuild],
+            Vec::new(),
+            stderr,
+        );
+
+        assert_eq!(status.state, DevelopmentState::StartupFailed);
+''',
+    '''        let status = compose_status(
+            process(ProcessState::Crashed, "waiting"),
+            true,
+            None,
+            false,
+            SupervisorPermissions::full(),
+            Vec::new(),
+            vec![rebuild],
+            Vec::new(),
+            stderr,
+        );
+
+        assert_eq!(status.state, DevelopmentState::StartupFailed);
 ''',
 )
