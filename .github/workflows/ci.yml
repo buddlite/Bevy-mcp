@@ -22,3 +22,13 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Test workspace
         run: cargo test --workspace
+
+  process-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check supervisor on Windows
+        run: cargo check -p bevy-mcp-supervisor --all-targets
+      - name: Test supervisor process lifecycle on Windows
+        run: cargo test -p bevy-mcp-supervisor --lib

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use bevy::prelude::*;
 use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use bevy_mcp_core::wire::{
     DEFAULT_MAX_FRAME_SIZE, Hello, WireEnvelope, WireMessage, WireResponse, read_frame, write_frame,
@@ -43,17 +44,48 @@ impl SupervisorBridgeConfig {
     }
 }
 
+/// Cross-thread lifecycle signal set only by an authenticated supervisor Shutdown frame.
+#[derive(Resource, Clone, Default)]
+pub struct SupervisorShutdownSignal(Arc<AtomicBool>);
+
+impl SupervisorShutdownSignal {
+    fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn take(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
+}
+
+pub(crate) fn supervisor_shutdown_system(
+    signal: Res<SupervisorShutdownSignal>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if signal.take() {
+        exit.write(AppExit::Success);
+    }
+}
+
+enum ConnectionEnd {
+    Reconnect,
+    Shutdown,
+}
+
 pub fn spawn_supervisor_bridge(
     config: SupervisorBridgeConfig,
     ingress: McpIngressQueue,
     results: McpResultQueue,
+    shutdown: SupervisorShutdownSignal,
 ) -> io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("bevy-mcp-supervisor-bridge".into())
         .spawn(move || {
             loop {
-                if let Err(error) = run_connection(&config, &ingress, &results) {
-                    tracing::debug!(%error, "supervisor bridge connection ended");
+                match run_connection(&config, &ingress, &results, &shutdown) {
+                    Ok(ConnectionEnd::Shutdown) => break,
+                    Ok(ConnectionEnd::Reconnect) => {}
+                    Err(error) => tracing::debug!(%error, "supervisor bridge connection ended"),
                 }
                 thread::sleep(config.reconnect_delay);
             }
@@ -64,7 +96,8 @@ fn run_connection(
     config: &SupervisorBridgeConfig,
     ingress: &McpIngressQueue,
     results: &McpResultQueue,
-) -> io::Result<()> {
+    shutdown: &SupervisorShutdownSignal,
+) -> io::Result<ConnectionEnd> {
     let mut stream = TcpStream::connect(config.address)?;
     stream.set_nodelay(true)?;
     write_frame(
@@ -138,6 +171,7 @@ fn run_connection(
     };
 
     let mut reader = reader;
+    let mut disposition = ConnectionEnd::Reconnect;
     while connected.load(Ordering::Acquire) {
         let envelope = match read_frame(&mut reader, config.maximum_frame_size) {
             Ok(envelope) => envelope,
@@ -169,14 +203,18 @@ fn run_connection(
                     break;
                 }
             }
-            WireMessage::Shutdown(_) => break,
+            WireMessage::Shutdown(_) => {
+                shutdown.request();
+                disposition = ConnectionEnd::Shutdown;
+                break;
+            }
             _ => {}
         }
     }
 
     connected.store(false, Ordering::Release);
     let _ = response_writer.join();
-    Ok(())
+    Ok(disposition)
 }
 
 fn protocol_io(error: bevy_mcp_core::wire::WireProtocolError) -> io::Error {

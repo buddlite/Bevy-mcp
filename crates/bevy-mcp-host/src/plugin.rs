@@ -18,7 +18,10 @@ use crate::permissions::McpPermissions;
 use crate::queue::{McpIngressQueue, McpResultQueue};
 use crate::registry::McpRegistry;
 use crate::schedule::{McpSchedulePlugin, McpSet};
-use crate::supervisor_bridge::{SupervisorBridgeConfig, spawn_supervisor_bridge};
+use crate::supervisor_bridge::{
+    SupervisorBridgeConfig, SupervisorShutdownSignal, spawn_supervisor_bridge,
+    supervisor_shutdown_system,
+};
 use crate::systems;
 
 /// The main Bevy plugin that bridges MCP and ECS.
@@ -130,10 +133,15 @@ impl Plugin for BevyMcpPlugin {
         app.insert_resource(ingress.clone());
         app.insert_resource(results.clone());
         app.insert_resource(McpInstanceId::new(self.instance_id.clone()));
+        let supervisor_shutdown = SupervisorShutdownSignal::default();
+        app.insert_resource(supervisor_shutdown.clone());
         if let Some(config) = self.supervisor_bridge.clone() {
-            if let Err(error) =
-                spawn_supervisor_bridge(config, ingress.inner().clone(), results.inner().clone())
-            {
+            if let Err(error) = spawn_supervisor_bridge(
+                config,
+                ingress.inner().clone(),
+                results.inner().clone(),
+                supervisor_shutdown,
+            ) {
                 tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
             }
         }
@@ -166,6 +174,7 @@ impl Plugin for BevyMcpPlugin {
         app.add_systems(
             PreUpdate,
             (
+                supervisor_shutdown_system.before(debugger::debug_ingress_system),
                 debugger::debug_ingress_system
                     .before(advanced::advanced_ingress_system)
                     .before(systems::ingress_system)

@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use bevy_mcp_core::command::{McpCommand, McpResult};
 use bevy_mcp_core::wire::{
-    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, SUPERVISOR_PROTOCOL_VERSION, WireEnvelope, WireError,
-    WireMessage, WireResponse,
+    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, SUPERVISOR_PROTOCOL_VERSION, ShutdownRequest,
+    WireEnvelope, WireError, WireMessage, WireResponse,
 };
 use bevy_mcp_server::backend::{
     BackendFuture, BackendMode, GameBackendStatus, GameCallError, GameCommandBackend,
@@ -45,12 +45,14 @@ pub struct SupervisorSnapshot {
     pub host: HostState,
     pub instance_id: String,
     pub connection_id: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Clone)]
 struct ActiveConnection {
     connection_id: String,
     writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    pid: Option<u32>,
 }
 
 struct PendingRequest {
@@ -59,7 +61,7 @@ struct PendingRequest {
 }
 
 struct Inner {
-    expected_instance_id: String,
+    expected_instance_id: Mutex<String>,
     token: String,
     maximum_frame_size: usize,
     probe_timeout: Duration,
@@ -85,7 +87,7 @@ impl SupervisorBackend {
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                expected_instance_id,
+                expected_instance_id: Mutex::new(expected_instance_id),
                 token,
                 maximum_frame_size,
                 probe_timeout,
@@ -105,9 +107,57 @@ impl SupervisorBackend {
             process: *self.inner.process.lock().unwrap(),
             transport: *self.inner.transport.lock().unwrap(),
             host: *self.inner.host.lock().unwrap(),
-            instance_id: self.inner.expected_instance_id.clone(),
+            instance_id: self.expected_instance_id(),
             connection_id: active.as_ref().map(|active| active.connection_id.clone()),
+            pid: active.as_ref().and_then(|active| active.pid),
         }
+    }
+
+    pub fn expected_instance_id(&self) -> String {
+        self.inner.expected_instance_id.lock().unwrap().clone()
+    }
+
+    /// Prepare the transport to accept a new process incarnation.
+    /// This is only legal while no game connection is active.
+    pub fn prepare_instance(&self, instance_id: impl Into<String>) -> Result<(), GameCallError> {
+        if self.inner.active.lock().unwrap().is_some() {
+            return Err(GameCallError::new(
+                "INSTANCE_ALREADY_CONNECTED",
+                "Cannot rotate the expected instance while a game is connected",
+            ));
+        }
+        *self.inner.expected_instance_id.lock().unwrap() = instance_id.into();
+        *self.inner.process.lock().unwrap() = ProcessObservation::Unknown;
+        *self.inner.transport.lock().unwrap() = TransportState::Disconnected;
+        *self.inner.host.lock().unwrap() = HostState::Waiting;
+        Ok(())
+    }
+
+    /// Send a lifecycle shutdown request over the authenticated active connection.
+    /// The game-side bridge turns this into a Bevy AppExit request.
+    pub async fn send_shutdown(&self, reason: impl Into<String>) -> Result<(), GameCallError> {
+        let active = self
+            .inner
+            .active
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| GameCallError::new("GAME_UNAVAILABLE", "No game is connected"))?;
+        let envelope = WireEnvelope::on_connection(
+            active.connection_id.clone(),
+            WireMessage::Shutdown(ShutdownRequest {
+                reason: Some(reason.into()),
+            }),
+        );
+        let mut writer = active.writer.lock().await;
+        write_envelope(&mut *writer, &envelope, self.inner.maximum_frame_size)
+            .await
+            .map_err(|error| {
+                GameCallError::new(
+                    "GAME_DISCONNECTED",
+                    format!("Failed to send lifecycle shutdown request: {error}"),
+                )
+            })
     }
 
     async fn call_on_connection(
@@ -355,6 +405,11 @@ async fn accept_loop(listener: TcpListener, backend: SupervisorBackend) {
 async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) -> io::Result<()> {
     *backend.inner.transport.lock().unwrap() = TransportState::Connecting;
     let envelope = read_envelope(&mut stream, backend.inner.maximum_frame_size).await?;
+    let expected_instance_id = backend.expected_instance_id();
+    let peer_pid = match &envelope.message {
+        WireMessage::Hello(hello) => hello.pid,
+        _ => None,
+    };
 
     let rejection = if envelope.protocol_version != SUPERVISOR_PROTOCOL_VERSION {
         Some(WireError::new(
@@ -372,14 +427,12 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
                     "Supervisor authentication token did not match",
                 ))
             }
-            WireMessage::Hello(hello)
-                if hello.instance_id != backend.inner.expected_instance_id =>
-            {
+            WireMessage::Hello(hello) if hello.instance_id != expected_instance_id => {
                 Some(WireError::new(
                     "INSTANCE_MISMATCH",
                     format!(
                         "Expected instance {}, got {}",
-                        backend.inner.expected_instance_id, hello.instance_id
+                        expected_instance_id, hello.instance_id
                     ),
                 ))
             }
@@ -414,7 +467,7 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
         write_envelope(
             &mut *writer_guard,
             &WireEnvelope::new(WireMessage::HelloAccepted(HelloAccepted {
-                instance_id: backend.inner.expected_instance_id.clone(),
+                instance_id: expected_instance_id.clone(),
                 connection_id: connection_id.clone(),
             })),
             backend.inner.maximum_frame_size,
@@ -425,6 +478,7 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
     *backend.inner.active.lock().unwrap() = Some(ActiveConnection {
         connection_id: connection_id.clone(),
         writer,
+        pid: peer_pid,
     });
     *backend.inner.process.lock().unwrap() = ProcessObservation::Running;
     *backend.inner.transport.lock().unwrap() = TransportState::Connected;
@@ -453,7 +507,7 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
             Ok(McpResult::Success(value))
                 if value.get("probe_id").and_then(|value| value.as_u64()) == Some(probe_id)
                     && value.get("instance_id").and_then(|value| value.as_str())
-                        == Some(probe_backend.inner.expected_instance_id.as_str()) =>
+                        == Some(probe_backend.expected_instance_id().as_str()) =>
             {
                 probe_backend.set_host_state_for_generation(&probe_connection_id, HostState::Ready)
             }
