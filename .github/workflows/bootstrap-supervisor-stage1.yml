@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - stage1/supervisor-foundation
+  pull_request:
+    branches:
+      - v.01
 
 permissions:
   contents: write
