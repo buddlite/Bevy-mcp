@@ -1,9 +1,9 @@
 name: Bootstrap supervisor stage 2
 
 on:
-  push:
+  pull_request:
     branches:
-      - stage2/process-manager
+      - v.01
 
 permissions:
   contents: write
