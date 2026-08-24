@@ -72,24 +72,17 @@ jobs:
               raise SystemExit(f'second-game setup anchor count: {text.count(old)}')
           text = text.replace(old, new, 1)
 
-          old = '''            other => panic!("expected rejection, got {other:?}"),
-              }
-          }
-          '''
-          new = '''            other => panic!("expected rejection, got {other:?}"),
-              }
+          test_start = text.index('    async fn simultaneous_second_game_is_rejected() {')
+          test_end = text.index('\n    }\n}', test_start)
+          assertions = '''
 
               let snapshot = transport.backend().snapshot();
               assert_eq!(snapshot.transport, TransportState::Connected);
               assert_eq!(
                   snapshot.connection_id.as_deref(),
                   Some(first_connection_id.as_str())
-              );
-          }
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'second-game assertion anchor count: {text.count(old)}')
-          text = text.replace(old, new, 1)
+              );'''
+          text = text[:test_end] + assertions + text[test_end:]
 
           path.write_text(text)
           PY
