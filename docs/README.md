@@ -54,6 +54,7 @@ There is no separate server process. The MCP server is embedded in your game bin
 
 ## Quick Links
 
+- [Supervisor implementation specification](supervisor-implementation-spec.md) — approved staged design for persistent MCP, process lifecycle, Cargo execution, restart identity, and liveness semantics
 - [Agent adapter checklist](agent-adapter.md) — register semantic actions, typed state, checkpoint resources, and exact system-access metadata
 - [Main README](../README.md) — Overview, tools list, architecture
 - [Quick Start](../QUICKSTART.md) — Minimal setup
