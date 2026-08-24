@@ -118,19 +118,22 @@ Useful target-selection errors include:
 
 ## Recommended agent loop
 
-Start by calling `capabilities`. In supervised mode this is a merged contract containing both the current Bevy-host capabilities and supervisor-owned build/lifecycle capabilities.
+Start by calling `development_status`. It is the compact agent-facing diagnosis surface and returns the current development state, any active Cargo/rebuild operation, current instance/connection/build identity, the most recent failure with structured compiler or process evidence, and one recommended recovery action/tool.
+
+Use `capabilities` when the agent needs the full permission/availability contract. Use `process_evidence` when it needs a larger or explicit stdout/stderr view.
 
 For a source-code change, the normal autonomous loop is:
 
 ```text
-1. edit source
-2. rebuild_restart
-3. operation_status until terminal
-4. inspect returned check/build/startup evidence
-5. process_evidence when additional stdout/stderr context is useful
-6. inspect the new live world
-7. interact / assert / playtest / diagnose
-8. repeat
+1. development_status
+2. edit source
+3. rebuild_restart
+4. operation_status until terminal
+5. development_status to classify success/failure and choose the next action
+6. process_evidence when additional stdout/stderr context is useful
+7. inspect the new live world
+8. interact / assert / playtest / diagnose
+9. repeat
 ```
 
 `rebuild_restart` returns immediately with an operation ID such as:
@@ -203,6 +206,22 @@ The supervisor remains alive when its managed game crashes. `process_status` rep
 ### External process ownership
 
 A game that connects to the supervisor but was not launched by it is classified as external. Supervisor lifecycle tools never kill an externally owned process. `rebuild_restart` rejects external ownership with `PROCESS_NOT_MANAGED` rather than taking control implicitly.
+
+## Agent-oriented development diagnosis
+
+`development_status` is intended to answer the first question an autonomous coding agent normally has after any edit, build, restart, or crash: **what state am I in and what should I do next?**
+
+Its response includes:
+
+- a single normalized state such as `ready`, `rebuild_in_progress`, `compile_failed`, `startup_failed`, `game_crashed`, or `host_unresponsive`
+- the active supervisor operation, if any
+- current `instance_id`, `connection_id`, executable, and the most recent successful build/rebuild operation identities
+- the latest relevant failure across Cargo, `rebuild_restart`, and the managed game process
+- structured Rust compiler diagnostics for check/build/test failures
+- bounded stdout/stderr evidence for process/startup failures
+- a deterministic recovery action and the MCP tool that should normally be called next
+
+The status is advisory orchestration metadata: it does not mutate the game or automatically execute the recovery action.
 
 ## Process evidence
 

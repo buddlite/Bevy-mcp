@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::cargo_executor::{CargoError, CargoExecutor, CargoInvocation};
+use crate::development_status::DevelopmentStatus;
 use crate::permissions::SupervisorPermissions;
 use crate::process_manager::{
     ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState,
@@ -193,6 +194,14 @@ pub struct ProcessEvidenceParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DevelopmentStatusParams {
+    #[schemars(
+        description = "Maximum newest stdout/stderr lines retained in failure evidence (default 50)."
+    )]
+    pub evidence_limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CargoToolParams {
     #[schemars(
         description = "Cargo package name. Required when project metadata has multiple viable binary packages."
@@ -328,6 +337,25 @@ impl SupervisorToolServer {
             host_error,
         )
         .to_string()
+    }
+
+    #[tool(
+        description = "Return one agent-oriented development diagnosis: current state, active operation, runtime/build identity, most recent failure with compiler/process evidence, and the recommended next tool/action."
+    )]
+    async fn development_status(
+        &self,
+        Parameters(params): Parameters<DevelopmentStatusParams>,
+    ) -> String {
+        let limit = params.evidence_limit.unwrap_or(50).clamp(1, 1000) as usize;
+        let status = DevelopmentStatus::collect(
+            &self.manager,
+            &self.cargo,
+            &self.rebuild,
+            self.permissions,
+            limit,
+        )
+        .await;
+        serde_json::to_string(&status).unwrap()
     }
 
     #[tool(

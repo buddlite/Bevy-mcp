@@ -146,12 +146,16 @@ fn compose_status(
         &stderr_tail,
     );
     let generation = generation(&process, &cargo_operations, &rebuild_operations);
+    let latest_success = latest_success_unix_ms(&process, &cargo_operations, &rebuild_operations);
+    let current_failure = last_failure
+        .as_ref()
+        .filter(|failure| failure.occurred_unix_ms.unwrap_or_default() > latest_success);
     let state = classify_state(
         &process,
         cargo_available,
         permissions,
         active_operation.as_ref(),
-        last_failure.as_ref(),
+        current_failure,
     );
     let recovery = recovery_action(
         state,
@@ -159,9 +163,9 @@ fn compose_status(
         configured_launch_target,
         permissions,
         active_operation.as_ref(),
-        last_failure.as_ref(),
+        current_failure,
     );
-    let summary = summary(state, active_operation.as_ref(), last_failure.as_ref());
+    let summary = summary(state, active_operation.as_ref(), current_failure);
 
     DevelopmentStatus {
         schema_version: 1,
@@ -227,13 +231,21 @@ fn latest_failure(
                 CargoOperationState::Failed | CargoOperationState::TimedOut
             )
         })
-        .max_by_key(|operation| operation.finished_unix_ms.unwrap_or(operation.created_unix_ms))
+        .max_by_key(|operation| {
+            operation
+                .finished_unix_ms
+                .unwrap_or(operation.created_unix_ms)
+        })
         .map(failure_from_cargo);
 
     let rebuild_failure = rebuild
         .iter()
         .filter(|operation| operation.state == RebuildRestartState::Failed)
-        .max_by_key(|operation| operation.finished_unix_ms.unwrap_or(operation.created_unix_ms))
+        .max_by_key(|operation| {
+            operation
+                .finished_unix_ms
+                .unwrap_or(operation.created_unix_ms)
+        })
         .map(|operation| failure_from_rebuild(operation, stdout_tail, stderr_tail));
 
     let process_failure = (process.state == ProcessState::Crashed).then(|| DevelopmentFailure {
@@ -329,9 +341,36 @@ fn failure_from_rebuild(
             .unwrap_or_else(|| "rebuild_restart failed".to_string()),
         occurred_unix_ms: operation.finished_unix_ms,
         diagnostics,
-        stdout_tail: process_evidence.then(|| stdout_tail.to_vec()).unwrap_or_default(),
-        stderr_tail: process_evidence.then(|| stderr_tail.to_vec()).unwrap_or_default(),
+        stdout_tail: process_evidence
+            .then(|| stdout_tail.to_vec())
+            .unwrap_or_default(),
+        stderr_tail: process_evidence
+            .then(|| stderr_tail.to_vec())
+            .unwrap_or_default(),
     }
+}
+
+fn latest_success_unix_ms(
+    process: &ProcessSnapshot,
+    cargo: &[CargoOperationSnapshot],
+    rebuild: &[RebuildRestartSnapshot],
+) -> u128 {
+    let cargo_success = cargo
+        .iter()
+        .filter(|operation| operation.state == CargoOperationState::Succeeded)
+        .filter_map(|operation| operation.finished_unix_ms)
+        .max()
+        .unwrap_or_default();
+    let rebuild_success = rebuild
+        .iter()
+        .filter(|operation| operation.state == RebuildRestartState::Succeeded)
+        .filter_map(|operation| operation.finished_unix_ms)
+        .max()
+        .unwrap_or_default();
+    let ready_process = (process.state == ProcessState::Running && process.host == "ready")
+        .then_some(process.started_unix_ms.unwrap_or_default())
+        .unwrap_or_default();
+    cargo_success.max(rebuild_success).max(ready_process)
 }
 
 fn generation(
@@ -345,19 +384,29 @@ fn generation(
             operation.kind == CargoOperationKind::Build
                 && operation.state == CargoOperationState::Succeeded
         })
-        .max_by_key(|operation| operation.finished_unix_ms.unwrap_or(operation.created_unix_ms));
+        .max_by_key(|operation| {
+            operation
+                .finished_unix_ms
+                .unwrap_or(operation.created_unix_ms)
+        });
     let last_rebuild = rebuild
         .iter()
         .filter(|operation| operation.state == RebuildRestartState::Succeeded)
-        .max_by_key(|operation| operation.finished_unix_ms.unwrap_or(operation.created_unix_ms));
+        .max_by_key(|operation| {
+            operation
+                .finished_unix_ms
+                .unwrap_or(operation.created_unix_ms)
+        });
 
     DevelopmentGeneration {
         instance_id: process.instance_id.clone(),
         connection_id: process.connection_id.clone(),
         executable: process.executable.clone(),
         process_started_unix_ms: process.started_unix_ms,
-        last_successful_build_operation_id: last_build.map(|operation| operation.operation_id.clone()),
-        last_successful_build_finished_unix_ms: last_build.and_then(|operation| operation.finished_unix_ms),
+        last_successful_build_operation_id: last_build
+            .map(|operation| operation.operation_id.clone()),
+        last_successful_build_finished_unix_ms: last_build
+            .and_then(|operation| operation.finished_unix_ms),
         last_successful_rebuild_operation_id: last_rebuild
             .map(|operation| operation.operation_id.clone()),
         last_successful_rebuild_finished_unix_ms: last_rebuild
@@ -382,9 +431,6 @@ fn classify_state(
 
     if process.ownership == ProcessOwnership::External {
         return DevelopmentState::ExternalGame;
-    }
-    if process.state == ProcessState::Crashed {
-        return DevelopmentState::GameCrashed;
     }
     if process.host == "unresponsive" {
         return DevelopmentState::HostUnresponsive;
@@ -413,13 +459,19 @@ fn classify_state(
         }
     }
 
+    if process.state == ProcessState::Crashed {
+        return DevelopmentState::GameCrashed;
+    }
     if process.state == ProcessState::Running && process.host == "ready" {
         return DevelopmentState::Ready;
     }
     if process.state == ProcessState::Exited {
         return DevelopmentState::GameExited;
     }
-    if matches!(process.state, ProcessState::Stopped | ProcessState::Stopping) {
+    if matches!(
+        process.state,
+        ProcessState::Stopped | ProcessState::Stopping
+    ) {
         return DevelopmentState::Stopped;
     }
     if !cargo_available {
@@ -508,7 +560,9 @@ fn recovery_action(
         },
         DevelopmentState::ExternalGame => RecoveryAction {
             action: "use_external_lifecycle".to_string(),
-            reason: "The connected game is externally owned; the supervisor will not stop or rebuild it".to_string(),
+            reason:
+                "The connected game is externally owned; the supervisor will not stop or rebuild it"
+                    .to_string(),
             tool: Some("process_status".to_string()),
         },
         DevelopmentState::Starting => RecoveryAction {
@@ -530,7 +584,9 @@ fn summary(
     failure: Option<&DevelopmentFailure>,
 ) -> String {
     match state {
-        DevelopmentState::Ready => "Managed game is connected and ready for agent interaction".to_string(),
+        DevelopmentState::Ready => {
+            "Managed game is connected and ready for agent interaction".to_string()
+        }
         DevelopmentState::RebuildInProgress | DevelopmentState::CargoInProgress => active
             .map(|operation| format!("{} is {}", operation.kind, operation.state))
             .unwrap_or_else(|| "A supervisor operation is in progress".to_string()),
@@ -540,13 +596,25 @@ fn summary(
         | DevelopmentState::GameCrashed => failure
             .map(|failure| format!("{}: {}", failure.code, failure.message))
             .unwrap_or_else(|| "The most recent development operation failed".to_string()),
-        DevelopmentState::HostUnresponsive => "Game transport is connected but the Bevy host is unresponsive".to_string(),
-        DevelopmentState::Starting => "Managed game is starting and has not reached host readiness".to_string(),
-        DevelopmentState::GameExited => "Managed game exited without an active replacement".to_string(),
+        DevelopmentState::HostUnresponsive => {
+            "Game transport is connected but the Bevy host is unresponsive".to_string()
+        }
+        DevelopmentState::Starting => {
+            "Managed game is starting and has not reached host readiness".to_string()
+        }
+        DevelopmentState::GameExited => {
+            "Managed game exited without an active replacement".to_string()
+        }
         DevelopmentState::Stopped => "No managed game is currently running".to_string(),
-        DevelopmentState::ExternalGame => "A game is connected but lifecycle ownership is external".to_string(),
-        DevelopmentState::ProjectUnavailable => "Cargo project discovery is unavailable".to_string(),
-        DevelopmentState::PermissionBlocked => "Supervisor permissions block the required development action".to_string(),
+        DevelopmentState::ExternalGame => {
+            "A game is connected but lifecycle ownership is external".to_string()
+        }
+        DevelopmentState::ProjectUnavailable => {
+            "Cargo project discovery is unavailable".to_string()
+        }
+        DevelopmentState::PermissionBlocked => {
+            "Supervisor permissions block the required development action".to_string()
+        }
         DevelopmentState::Idle => "Supervisor is idle and no game is ready".to_string(),
     }
 }
@@ -564,7 +632,9 @@ fn cargo_terminal(state: CargoOperationState) -> bool {
 fn rebuild_terminal(state: RebuildRestartState) -> bool {
     matches!(
         state,
-        RebuildRestartState::Succeeded | RebuildRestartState::Failed | RebuildRestartState::Cancelled
+        RebuildRestartState::Succeeded
+            | RebuildRestartState::Failed
+            | RebuildRestartState::Cancelled
     )
 }
 
@@ -608,9 +678,7 @@ mod tests {
     use crate::cargo_executor::{
         CargoInvocation, CargoOperationFailure, CargoRunResult, CargoSpan,
     };
-    use crate::rebuild_restart::{
-        RebuildRestartEvidence, RebuildRestartFailure,
-    };
+    use crate::rebuild_restart::{RebuildRestartEvidence, RebuildRestartFailure};
 
     fn process(state: ProcessState, host: &str) -> ProcessSnapshot {
         ProcessSnapshot {
@@ -696,6 +764,36 @@ mod tests {
     }
 
     #[test]
+    fn newer_success_supersedes_old_failure_without_erasing_history() {
+        let mut successful = failed_check();
+        successful.operation_id = "supervisor:check:2".to_string();
+        successful.state = CargoOperationState::Succeeded;
+        successful.created_unix_ms = 230;
+        successful.started_unix_ms = Some(231);
+        successful.finished_unix_ms = Some(240);
+        successful.failure = None;
+        successful.result.as_mut().unwrap().success = true;
+        successful.result.as_mut().unwrap().error_count = 0;
+        successful.result.as_mut().unwrap().diagnostics.clear();
+
+        let status = compose_status(
+            process(ProcessState::Running, "ready"),
+            true,
+            None,
+            false,
+            SupervisorPermissions::full(),
+            vec![failed_check(), successful],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert_eq!(status.state, DevelopmentState::Ready);
+        assert_eq!(status.recovery.action, "continue_agent_loop");
+        assert_eq!(status.last_failure.as_ref().unwrap().code, "BUILD_FAILED");
+    }
+
+    #[test]
     fn active_rebuild_takes_precedence_over_old_failure() {
         let rebuild = RebuildRestartSnapshot {
             operation_id: "supervisor:rebuild_restart:2".to_string(),
@@ -721,7 +819,10 @@ mod tests {
 
         assert_eq!(status.state, DevelopmentState::RebuildInProgress);
         assert_eq!(status.recovery.tool.as_deref(), Some("operation_status"));
-        assert_eq!(status.active_operation.unwrap().stage.as_deref(), Some("building"));
+        assert_eq!(
+            status.active_operation.unwrap().stage.as_deref(),
+            Some("building")
+        );
     }
 
     #[test]
@@ -747,7 +848,7 @@ mod tests {
             text: "panic in startup".to_string(),
         }];
         let status = compose_status(
-            process(ProcessState::Stopped, "waiting"),
+            process(ProcessState::Crashed, "waiting"),
             true,
             None,
             false,
@@ -760,6 +861,9 @@ mod tests {
 
         assert_eq!(status.state, DevelopmentState::StartupFailed);
         assert_eq!(status.recovery.tool.as_deref(), Some("process_evidence"));
-        assert_eq!(status.last_failure.unwrap().stderr_tail[0].text, "panic in startup");
+        assert_eq!(
+            status.last_failure.unwrap().stderr_tail[0].text,
+            "panic in startup"
+        );
     }
 }

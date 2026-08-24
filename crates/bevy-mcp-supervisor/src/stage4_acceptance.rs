@@ -8,9 +8,9 @@ use uuid::Uuid;
 use crate::process_tools::merge_supervisor_capabilities;
 use crate::{
     CargoExecutor, CargoExecutorConfig, CargoInvocation, CargoOperationSnapshot,
-    CargoOperationState, ProcessManager, ProcessManagerConfig, ProcessOwnership, ProcessSnapshot,
-    ProcessState, RebuildRestartCoordinator, RebuildRestartSnapshot, RebuildRestartState,
-    SupervisorPermissions, SupervisorTransport,
+    CargoOperationState, DevelopmentState, DevelopmentStatus, ProcessManager, ProcessManagerConfig,
+    ProcessOwnership, ProcessSnapshot, ProcessState, RebuildRestartCoordinator,
+    RebuildRestartSnapshot, RebuildRestartState, SupervisorPermissions, SupervisorTransport,
 };
 
 const HEALTHY_SOURCE_V1: &str = r#"
@@ -395,6 +395,26 @@ async fn failed_preflight_check_leaves_old_game_running() {
     assert_eq!(current.ownership, ProcessOwnership::Managed);
     assert_eq!(current.instance_id, initial_instance);
     assert_eq!(current.connection_id, initial_connection);
+
+    let development = DevelopmentStatus::collect(
+        &manager,
+        &executor,
+        &coordinator,
+        SupervisorPermissions::full(),
+        50,
+    )
+    .await;
+    assert_eq!(development.state, DevelopmentState::CompileFailed);
+    let diagnostic_failure = development.last_failure.as_ref().unwrap();
+    assert_eq!(diagnostic_failure.source, "rebuild_restart");
+    assert_eq!(diagnostic_failure.stage.as_deref(), Some("check"));
+    assert!(!diagnostic_failure.diagnostics.is_empty());
+    assert_eq!(development.recovery.action, "fix_compile_errors");
+    assert_eq!(
+        development.recovery.tool.as_deref(),
+        Some("rebuild_restart")
+    );
+
     manager.stop().await.unwrap();
 }
 
@@ -424,6 +444,28 @@ async fn replacement_startup_failure_returns_exit_and_stderr_evidence() {
             .details
             .to_string()
             .contains("stage4 startup failure marker")
+    );
+
+    let development = DevelopmentStatus::collect(
+        &manager,
+        &executor,
+        &coordinator,
+        SupervisorPermissions::full(),
+        50,
+    )
+    .await;
+    assert_eq!(development.state, DevelopmentState::StartupFailed);
+    let startup_failure = development.last_failure.as_ref().unwrap();
+    assert_eq!(startup_failure.stage.as_deref(), Some("launch"));
+    assert!(
+        startup_failure
+            .stderr_tail
+            .iter()
+            .any(|entry| entry.text.contains("stage4 startup failure marker"))
+    );
+    assert_eq!(
+        development.recovery.tool.as_deref(),
+        Some("process_evidence")
     );
 }
 
