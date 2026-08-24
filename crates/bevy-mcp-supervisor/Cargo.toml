@@ -21,6 +21,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+command-group = { version = "5.0.1", features = ["with-tokio"] }
 bevy-mcp-core = { version = "0.1", path = "../bevy-mcp-core" }
 bevy-mcp-server = { version = "0.1", path = "../bevy-mcp-server" }
 rmcp = { version = "3", features = ["server", "transport-io"] }

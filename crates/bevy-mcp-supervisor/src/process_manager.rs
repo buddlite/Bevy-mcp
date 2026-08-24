@@ -1,441 +1,4 @@
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def read(path):
-    return (ROOT / path).read_text()
-
-
-def write(path, text):
-    target = ROOT / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text)
-
-
-def replace_once(text, old, new, label):
-    count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{label}: expected exactly one occurrence, found {count}")
-    return text.replace(old, new, 1)
-
-
-# --- supervisor Cargo dependencies ---
-path = "crates/bevy-mcp-supervisor/Cargo.toml"
-text = read(path)
-text = replace_once(
-    text,
-    'anyhow = "1"\n',
-    'anyhow = "1"\nclap = { version = "4", features = ["derive"] }\ncommand-group = { version = "5.0.1", features = ["with-tokio"] }\n',
-    "supervisor dependencies",
-)
-write(path, text)
-
-
-# --- backend: mutable expected instance, shutdown frame, peer PID ---
-path = "crates/bevy-mcp-supervisor/src/backend.rs"
-text = read(path)
-text = text.replace(
-    "    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, SUPERVISOR_PROTOCOL_VERSION, WireEnvelope, WireError,\n    WireMessage, WireResponse,\n",
-    "    DEFAULT_MAX_FRAME_SIZE, HelloAccepted, SUPERVISOR_PROTOCOL_VERSION, ShutdownRequest,\n    WireEnvelope, WireError, WireMessage, WireResponse,\n",
-)
-text = replace_once(
-    text,
-    "struct ActiveConnection {\n    connection_id: String,\n    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,\n}",
-    "struct ActiveConnection {\n    connection_id: String,\n    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,\n    pid: Option<u32>,\n}",
-    "active connection pid",
-)
-text = replace_once(
-    text,
-    "    pub connection_id: Option<String>,\n}",
-    "    pub connection_id: Option<String>,\n    pub pid: Option<u32>,\n}",
-    "snapshot pid",
-)
-text = replace_once(
-    text,
-    "    expected_instance_id: String,\n",
-    "    expected_instance_id: Mutex<String>,\n",
-    "mutable expected instance",
-)
-text = replace_once(
-    text,
-    "                expected_instance_id,\n",
-    "                expected_instance_id: Mutex::new(expected_instance_id),\n",
-    "expected instance init",
-)
-old_snapshot = '''    pub fn snapshot(&self) -> SupervisorSnapshot {
-        let active = self.inner.active.lock().unwrap();
-        SupervisorSnapshot {
-            process: *self.inner.process.lock().unwrap(),
-            transport: *self.inner.transport.lock().unwrap(),
-            host: *self.inner.host.lock().unwrap(),
-            instance_id: self.inner.expected_instance_id.clone(),
-            connection_id: active.as_ref().map(|active| active.connection_id.clone()),
-        }
-    }
-'''
-new_snapshot = '''    pub fn snapshot(&self) -> SupervisorSnapshot {
-        let active = self.inner.active.lock().unwrap();
-        SupervisorSnapshot {
-            process: *self.inner.process.lock().unwrap(),
-            transport: *self.inner.transport.lock().unwrap(),
-            host: *self.inner.host.lock().unwrap(),
-            instance_id: self.expected_instance_id(),
-            connection_id: active.as_ref().map(|active| active.connection_id.clone()),
-            pid: active.as_ref().and_then(|active| active.pid),
-        }
-    }
-
-    pub fn expected_instance_id(&self) -> String {
-        self.inner.expected_instance_id.lock().unwrap().clone()
-    }
-
-    /// Prepare the transport to accept a new process incarnation.
-    /// This is only legal while no game connection is active.
-    pub fn prepare_instance(&self, instance_id: impl Into<String>) -> Result<(), GameCallError> {
-        if self.inner.active.lock().unwrap().is_some() {
-            return Err(GameCallError::new(
-                "INSTANCE_ALREADY_CONNECTED",
-                "Cannot rotate the expected instance while a game is connected",
-            ));
-        }
-        *self.inner.expected_instance_id.lock().unwrap() = instance_id.into();
-        *self.inner.process.lock().unwrap() = ProcessObservation::Unknown;
-        *self.inner.transport.lock().unwrap() = TransportState::Disconnected;
-        *self.inner.host.lock().unwrap() = HostState::Waiting;
-        Ok(())
-    }
-
-    /// Send a lifecycle shutdown request over the authenticated active connection.
-    /// The game-side bridge turns this into a Bevy AppExit request.
-    pub async fn send_shutdown(&self, reason: impl Into<String>) -> Result<(), GameCallError> {
-        let active = self
-            .inner
-            .active
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| GameCallError::new("GAME_UNAVAILABLE", "No game is connected"))?;
-        let envelope = WireEnvelope::on_connection(
-            active.connection_id.clone(),
-            WireMessage::Shutdown(ShutdownRequest {
-                reason: Some(reason.into()),
-            }),
-        );
-        let mut writer = active.writer.lock().await;
-        write_envelope(&mut *writer, &envelope, self.inner.maximum_frame_size)
-            .await
-            .map_err(|error| {
-                GameCallError::new(
-                    "GAME_DISCONNECTED",
-                    format!("Failed to send lifecycle shutdown request: {error}"),
-                )
-            })
-    }
-'''
-text = replace_once(text, old_snapshot, new_snapshot, "backend snapshot and lifecycle methods")
-
-# Handshake snapshots the expected instance once, preventing mixed-generation comparisons.
-needle = "async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) -> io::Result<()> {\n    *backend.inner.transport.lock().unwrap() = TransportState::Connecting;\n    let envelope = read_envelope(&mut stream, backend.inner.maximum_frame_size).await?;\n"
-replacement = needle + "    let expected_instance_id = backend.expected_instance_id();\n    let peer_pid = match &envelope.message {\n        WireMessage::Hello(hello) => hello.pid,\n        _ => None,\n    };\n"
-text = replace_once(text, needle, replacement, "handshake expected instance snapshot")
-text = text.replace("backend.inner.expected_instance_id", "expected_instance_id")
-# The broad replacement also touched methods above; repair the intended Mutex accesses.
-text = text.replace("self.inner.expected_instance_id.lock()", "self.inner.expected_instance_id.lock()")
-text = text.replace("*expected_instance_id.lock().unwrap()", "*self.inner.expected_instance_id.lock().unwrap()")
-# Repair helper if broad replacement changed it.
-text = text.replace("self.expected_instance_id.lock().unwrap().clone()", "self.inner.expected_instance_id.lock().unwrap().clone()")
-# HelloAccepted should clone the handshake snapshot.
-text = text.replace("instance_id: expected_instance_id.clone().clone(),", "instance_id: expected_instance_id.clone(),")
-text = text.replace("instance_id: expected_instance_id.clone(),", "instance_id: expected_instance_id.clone(),")
-text = replace_once(
-    text,
-    "        writer,\n    });",
-    "        writer,\n        pid: peer_pid,\n    });",
-    "store peer pid",
-)
-# Probe validation must compare with current immutable launch generation captured for this connection.
-old_probe = '''                    && value.get("instance_id").and_then(|value| value.as_str())
-                        == Some(expected_instance_id.as_str()) =>
-'''
-if old_probe not in text:
-    old_probe = '''                    && value.get("instance_id").and_then(|value| value.as_str())
-                        == Some(probe_backend.inner.expected_instance_id.as_str()) =>
-'''
-new_probe = '''                    && value.get("instance_id").and_then(|value| value.as_str())
-                        == Some(probe_backend.expected_instance_id().as_str()) =>
-'''
-text = replace_once(text, old_probe, new_probe, "probe expected instance")
-write(path, text)
-
-
-# --- game-side bridge: authenticated Shutdown -> Bevy AppExit; no reconnect after shutdown ---
-write("crates/bevy-mcp-host/src/supervisor_bridge.rs", r'''use std::io;
-use std::net::{SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-
-use bevy::prelude::*;
-use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
-use bevy_mcp_core::wire::{
-    DEFAULT_MAX_FRAME_SIZE, Hello, WireEnvelope, WireMessage, WireResponse, read_frame, write_frame,
-};
-
-#[derive(Debug, Clone)]
-pub struct SupervisorBridgeConfig {
-    pub address: SocketAddr,
-    pub token: String,
-    pub instance_id: String,
-    pub host_version: String,
-    pub bevy_version: Option<String>,
-    pub reconnect_delay: Duration,
-    pub maximum_frame_size: usize,
-}
-
-impl SupervisorBridgeConfig {
-    pub fn from_env() -> Result<Self, String> {
-        let address = std::env::var("BEVY_MCP_SUPERVISOR_ADDR")
-            .map_err(|_| "BEVY_MCP_SUPERVISOR_ADDR is not set".to_string())?
-            .parse()
-            .map_err(|error| format!("invalid BEVY_MCP_SUPERVISOR_ADDR: {error}"))?;
-        let token = std::env::var("BEVY_MCP_SUPERVISOR_TOKEN")
-            .map_err(|_| "BEVY_MCP_SUPERVISOR_TOKEN is not set".to_string())?;
-        let instance_id = std::env::var("BEVY_MCP_INSTANCE_ID")
-            .map_err(|_| "BEVY_MCP_INSTANCE_ID is not set".to_string())?;
-        Ok(Self {
-            address,
-            token,
-            instance_id,
-            host_version: env!("CARGO_PKG_VERSION").to_string(),
-            bevy_version: None,
-            reconnect_delay: Duration::from_millis(250),
-            maximum_frame_size: DEFAULT_MAX_FRAME_SIZE,
-        })
-    }
-}
-
-/// Cross-thread lifecycle signal set only by an authenticated supervisor Shutdown frame.
-#[derive(Resource, Clone, Default)]
-pub struct SupervisorShutdownSignal(Arc<AtomicBool>);
-
-impl SupervisorShutdownSignal {
-    fn request(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    fn take(&self) -> bool {
-        self.0.swap(false, Ordering::AcqRel)
-    }
-}
-
-pub(crate) fn supervisor_shutdown_system(
-    signal: Res<SupervisorShutdownSignal>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if signal.take() {
-        exit.write(AppExit::Success);
-    }
-}
-
-enum ConnectionEnd {
-    Reconnect,
-    Shutdown,
-}
-
-pub fn spawn_supervisor_bridge(
-    config: SupervisorBridgeConfig,
-    ingress: McpIngressQueue,
-    results: McpResultQueue,
-    shutdown: SupervisorShutdownSignal,
-) -> io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new()
-        .name("bevy-mcp-supervisor-bridge".into())
-        .spawn(move || loop {
-            match run_connection(&config, &ingress, &results, &shutdown) {
-                Ok(ConnectionEnd::Shutdown) => break,
-                Ok(ConnectionEnd::Reconnect) => {}
-                Err(error) => tracing::debug!(%error, "supervisor bridge connection ended"),
-            }
-            thread::sleep(config.reconnect_delay);
-        })
-}
-
-fn run_connection(
-    config: &SupervisorBridgeConfig,
-    ingress: &McpIngressQueue,
-    results: &McpResultQueue,
-    shutdown: &SupervisorShutdownSignal,
-) -> io::Result<ConnectionEnd> {
-    let mut stream = TcpStream::connect(config.address)?;
-    stream.set_nodelay(true)?;
-    write_frame(
-        &mut stream,
-        &WireEnvelope::new(WireMessage::Hello(Hello {
-            token: config.token.clone(),
-            instance_id: config.instance_id.clone(),
-            host_version: config.host_version.clone(),
-            bevy_version: config.bevy_version.clone(),
-            pid: Some(std::process::id()),
-        })),
-        config.maximum_frame_size,
-    )
-    .map_err(protocol_io)?;
-
-    let accepted = read_frame(&mut stream, config.maximum_frame_size).map_err(protocol_io)?;
-    let connection_id = match accepted.message {
-        WireMessage::HelloAccepted(accepted) if accepted.instance_id == config.instance_id => {
-            accepted.connection_id
-        }
-        WireMessage::HelloRejected(error) => {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("{}: {}", error.code, error.message),
-            ));
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "supervisor did not accept the bridge handshake",
-            ));
-        }
-    };
-
-    let reader = stream.try_clone()?;
-    let writer = Arc::new(Mutex::new(stream));
-    let connected = Arc::new(AtomicBool::new(true));
-
-    let response_writer = {
-        let writer = writer.clone();
-        let connected = connected.clone();
-        let results = results.clone();
-        let connection_id = connection_id.clone();
-        let maximum = config.maximum_frame_size;
-        thread::Builder::new()
-            .name("bevy-mcp-supervisor-responses".into())
-            .spawn(move || {
-                while connected.load(Ordering::Acquire) {
-                    for response in results.drain() {
-                        let envelope = WireEnvelope::on_connection(
-                            connection_id.clone(),
-                            WireMessage::Response(WireResponse {
-                                request_id: response.request_id,
-                                result: response.result,
-                            }),
-                        );
-                        let result = writer
-                            .lock()
-                            .map_err(|_| io::Error::other("bridge writer lock poisoned"))
-                            .and_then(|mut writer| {
-                                write_frame(&mut *writer, &envelope, maximum).map_err(protocol_io)
-                            });
-                        if result.is_err() {
-                            connected.store(false, Ordering::Release);
-                            break;
-                        }
-                    }
-                    thread::sleep(Duration::from_millis(1));
-                }
-            })?
-    };
-
-    let mut reader = reader;
-    let mut disposition = ConnectionEnd::Reconnect;
-    while connected.load(Ordering::Acquire) {
-        let envelope = match read_frame(&mut reader, config.maximum_frame_size) {
-            Ok(envelope) => envelope,
-            Err(_) => break,
-        };
-        if envelope.protocol_version != bevy_mcp_core::wire::SUPERVISOR_PROTOCOL_VERSION {
-            break;
-        }
-        if envelope.connection_id.as_deref() != Some(connection_id.as_str()) {
-            continue;
-        }
-        match envelope.message {
-            WireMessage::Command(command) => {
-                ingress.push(command.request_id, command.command);
-            }
-            WireMessage::TransportPing { nonce } => {
-                let pong = WireEnvelope::on_connection(
-                    connection_id.clone(),
-                    WireMessage::TransportPong { nonce },
-                );
-                let result = writer
-                    .lock()
-                    .map_err(|_| io::Error::other("bridge writer lock poisoned"))
-                    .and_then(|mut writer| {
-                        write_frame(&mut *writer, &pong, config.maximum_frame_size)
-                            .map_err(protocol_io)
-                    });
-                if result.is_err() {
-                    break;
-                }
-            }
-            WireMessage::Shutdown(_) => {
-                shutdown.request();
-                disposition = ConnectionEnd::Shutdown;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    connected.store(false, Ordering::Release);
-    let _ = response_writer.join();
-    Ok(disposition)
-}
-
-fn protocol_io(error: bevy_mcp_core::wire::WireProtocolError) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-''')
-
-# Plugin wires the shutdown signal into Bevy's normal frame schedule.
-path = "crates/bevy-mcp-host/src/plugin.rs"
-text = read(path)
-text = replace_once(
-    text,
-    "use crate::supervisor_bridge::{SupervisorBridgeConfig, spawn_supervisor_bridge};",
-    "use crate::supervisor_bridge::{\n    SupervisorBridgeConfig, SupervisorShutdownSignal, spawn_supervisor_bridge,\n    supervisor_shutdown_system,\n};",
-    "plugin bridge imports",
-)
-old_bridge = '''        if let Some(config) = self.supervisor_bridge.clone() {
-            if let Err(error) =
-                spawn_supervisor_bridge(config, ingress.inner().clone(), results.inner().clone())
-            {
-                tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
-            }
-        }
-'''
-new_bridge = '''        let supervisor_shutdown = SupervisorShutdownSignal::default();
-        app.insert_resource(supervisor_shutdown.clone());
-        if let Some(config) = self.supervisor_bridge.clone() {
-            if let Err(error) = spawn_supervisor_bridge(
-                config,
-                ingress.inner().clone(),
-                results.inner().clone(),
-                supervisor_shutdown,
-            ) {
-                tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
-            }
-        }
-'''
-text = replace_once(text, old_bridge, new_bridge, "plugin bridge setup")
-old_pre = '''                debugger::debug_ingress_system
-                    .before(advanced::advanced_ingress_system)
-'''
-new_pre = '''                supervisor_shutdown_system.before(debugger::debug_ingress_system),
-                debugger::debug_ingress_system
-                    .before(advanced::advanced_ingress_system)
-'''
-text = replace_once(text, old_pre, new_pre, "shutdown system schedule")
-write(path, text)
-
-
-# --- process manager ---
-write("crates/bevy-mcp-supervisor/src/process_manager.rs", r'''use std::collections::VecDeque;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
@@ -679,6 +242,7 @@ struct Inner {
     address: std::net::SocketAddr,
     token: String,
     config: ProcessManagerConfig,
+    lifecycle: AsyncMutex<()>,
     child: AsyncMutex<Option<ManagedChild>>,
     record: Mutex<ProcessRecord>,
     logs: Mutex<LogBuffer>,
@@ -703,6 +267,7 @@ impl ProcessManager {
                 token: token.into(),
                 logs: Mutex::new(LogBuffer::new(config.log_capacity)),
                 config,
+                lifecycle: AsyncMutex::new(()),
                 child: AsyncMutex::new(None),
                 record: Mutex::new(ProcessRecord::default()),
             }),
@@ -720,7 +285,10 @@ impl ProcessManager {
 
         if !child_present
             && backend.transport == TransportState::Connected
-            && !matches!(record.state, ProcessState::Starting | ProcessState::Stopping)
+            && !matches!(
+                record.state,
+                ProcessState::Starting | ProcessState::Stopping
+            )
         {
             return ProcessSnapshot {
                 state: ProcessState::Running,
@@ -754,7 +322,11 @@ impl ProcessManager {
         }
     }
 
-    pub fn logs(&self, stream: Option<&str>, limit: usize) -> Result<Vec<ProcessLogEntry>, ProcessError> {
+    pub fn logs(
+        &self,
+        stream: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ProcessLogEntry>, ProcessError> {
         if let Some(stream) = stream {
             if stream != "stdout" && stream != "stderr" {
                 return Err(ProcessError::new(
@@ -763,19 +335,26 @@ impl ProcessManager {
                 ));
             }
         }
-        Ok(self.inner.logs.lock().unwrap().snapshot(stream, limit.max(1)))
+        Ok(self
+            .inner
+            .logs
+            .lock()
+            .unwrap()
+            .snapshot(stream, limit.max(1)))
     }
 
     pub async fn launch(&self) -> Result<ProcessSnapshot, ProcessError> {
-        let launch = self
-            .inner
-            .config
-            .launch
-            .clone()
-            .ok_or_else(|| ProcessError::new(
+        let _operation = self.try_lifecycle_operation()?;
+        self.launch_inner().await
+    }
+
+    async fn launch_inner(&self) -> Result<ProcessSnapshot, ProcessError> {
+        let launch = self.inner.config.launch.clone().ok_or_else(|| {
+            ProcessError::new(
                 "PROCESS_TARGET_NOT_CONFIGURED",
                 "No managed game executable was configured when the supervisor started",
-            ))?;
+            )
+        })?;
 
         if self.inner.child.lock().await.is_some() {
             return Err(ProcessError::new(
@@ -869,6 +448,11 @@ impl ProcessManager {
     }
 
     pub async fn stop(&self) -> Result<ProcessSnapshot, ProcessError> {
+        let _operation = self.try_lifecycle_operation()?;
+        self.stop_inner().await
+    }
+
+    async fn stop_inner(&self) -> Result<ProcessSnapshot, ProcessError> {
         let child_present = self.inner.child.lock().await.is_some();
         if !child_present {
             if self.inner.backend.snapshot().transport == TransportState::Connected {
@@ -927,6 +511,7 @@ impl ProcessManager {
     }
 
     pub async fn restart(&self) -> Result<ProcessSnapshot, ProcessError> {
+        let _operation = self.try_lifecycle_operation()?;
         let ownership = self.inner.record.lock().unwrap().ownership;
         let child_present = self.inner.child.lock().await.is_some();
         if !child_present && self.inner.backend.snapshot().transport == TransportState::Connected {
@@ -942,16 +527,27 @@ impl ProcessManager {
             ));
         }
         if child_present {
-            self.stop().await?;
+            self.stop_inner().await?;
         }
-        self.launch().await
+        self.launch_inner().await
     }
 
     pub async fn shutdown_owned(&self) -> Result<(), ProcessError> {
+        // Supervisor teardown waits for an in-flight lifecycle operation instead of racing it.
+        let _operation = self.inner.lifecycle.lock().await;
         if self.inner.child.lock().await.is_none() {
             return Ok(());
         }
-        self.stop().await.map(|_| ())
+        self.stop_inner().await.map(|_| ())
+    }
+
+    fn try_lifecycle_operation(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, ProcessError> {
+        self.inner.lifecycle.try_lock().map_err(|_| {
+            ProcessError::new(
+                "PROCESS_OPERATION_IN_PROGRESS",
+                "Another process lifecycle operation is already in progress",
+            )
+        })
     }
 
     async fn wait_for_startup(&self, instance_id: &str) -> Result<ProcessSnapshot, ProcessError> {
@@ -959,11 +555,12 @@ impl ProcessManager {
         loop {
             let backend = self.inner.backend.snapshot();
             if backend.instance_id == instance_id && backend.host == HostState::Ready {
-                let mut record = self.inner.record.lock().unwrap();
-                if record.instance_id.as_deref() == Some(instance_id) {
-                    record.state = ProcessState::Running;
+                {
+                    let mut record = self.inner.record.lock().unwrap();
+                    if record.instance_id.as_deref() == Some(instance_id) {
+                        record.state = ProcessState::Running;
+                    }
                 }
-                drop(record);
                 return Ok(self.status().await);
             }
 
@@ -1014,7 +611,9 @@ impl ProcessManager {
                 let _ = managed.child.start_kill();
             }
         }
-        let _ = self.wait_for_exit(self.inner.config.force_stop_timeout).await;
+        let _ = self
+            .wait_for_exit(self.inner.config.force_stop_timeout)
+            .await;
     }
 
     async fn wait_for_exit(&self, timeout: Duration) -> Result<bool, ProcessError> {
@@ -1036,19 +635,32 @@ impl ProcessManager {
             return Ok(true);
         };
         let instance_id = managed.instance_id.clone();
-        match managed.child.try_wait() {
-            Ok(Some(status)) => {
-                guard.take();
-                drop(guard);
-                self.record_exit(&instance_id, status);
-                Ok(true)
+        let status = match managed.child.inner().try_wait() {
+            Ok(Some(status)) => status,
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                return Err(ProcessError::new(
+                    "PROCESS_STATUS_FAILED",
+                    format!("Failed to poll managed process leader state: {error}"),
+                ));
             }
-            Ok(None) => Ok(false),
-            Err(error) => Err(ProcessError::new(
+        };
+
+        // The group leader may exit while owned descendants remain alive. Keep ownership of
+        // the process-group / Job Object until every remaining member has been terminated and
+        // drained. start_kill may report that the group is already gone; that is already clean.
+        let _ = managed.child.start_kill();
+        managed.child.wait().await.map_err(|error| {
+            ProcessError::new(
                 "PROCESS_STATUS_FAILED",
-                format!("Failed to poll managed process state: {error}"),
-            )),
-        }
+                format!("Failed to drain managed process tree after leader exit: {error}"),
+            )
+        })?;
+
+        guard.take();
+        drop(guard);
+        self.record_exit(&instance_id, status);
+        Ok(true)
     }
 
     fn record_exit(&self, instance_id: &str, status: ExitStatus) {
@@ -1153,7 +765,10 @@ mod tests {
             .env("BEVY_MCP_FIXTURE_MODE", mode)
     }
 
-    async fn fixture_manager(mode: &str, ready_timeout: Duration) -> (crate::SupervisorTransport, ProcessManager) {
+    async fn fixture_manager(
+        mode: &str,
+        ready_timeout: Duration,
+    ) -> (crate::SupervisorTransport, ProcessManager) {
         let token = format!("secret-{}", uuid::Uuid::new_v4());
         let transport = crate::SupervisorTransport::bind_with_options(
             "run-bootstrap".into(),
@@ -1236,7 +851,7 @@ mod tests {
                 WireMessage::Command(command) => {
                     if let McpCommand::HostProbe { probe_id } = command.command {
                         if mode == "slow_ready" {
-                            std::thread::sleep(Duration::from_millis(180));
+                            std::thread::sleep(Duration::from_millis(80));
                         }
                         if mode != "hang" {
                             write_frame(
@@ -1303,7 +918,11 @@ mod tests {
         }
     }
 
-    async fn wait_for_state(manager: &ProcessManager, expected: ProcessState, timeout: Duration) -> ProcessSnapshot {
+    async fn wait_for_state(
+        manager: &ProcessManager,
+        expected: ProcessState,
+        timeout: Duration,
+    ) -> ProcessSnapshot {
         tokio::time::timeout(timeout, async {
             loop {
                 let status = manager.status().await;
@@ -1353,7 +972,7 @@ mod tests {
         let (_transport, manager) = fixture_manager("slow_ready", Duration::from_secs(2)).await;
         let started = tokio::time::Instant::now();
         let status = manager.launch().await.unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert!(started.elapsed() >= Duration::from_millis(60));
         assert_eq!(status.state, ProcessState::Running);
         assert_eq!(status.host, "ready");
         manager.stop().await.unwrap();
@@ -1366,7 +985,10 @@ mod tests {
         assert_eq!(error.code, "PROCESS_EXITED_DURING_STARTUP");
         assert_eq!(error.details["exit_code"], 42);
         let rendered = error.details["stderr_tail"].to_string();
-        assert!(rendered.contains("fixture startup failure marker"), "{rendered}");
+        assert!(
+            rendered.contains("fixture startup failure marker"),
+            "{rendered}"
+        );
     }
 
     #[tokio::test]
@@ -1414,7 +1036,9 @@ mod tests {
             token,
             ProcessManagerConfig::default(),
         );
-        let mut stream = tokio::net::TcpStream::connect(transport.address()).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(transport.address())
+            .await
+            .unwrap();
         let hello = WireEnvelope::new(WireMessage::Hello(Hello {
             token: token.into(),
             instance_id: "run-external".into(),
@@ -1443,13 +1067,57 @@ mod tests {
 
     #[tokio::test]
     async fn host_hang_remains_connected_but_unresponsive() {
-        let (_transport, manager) = fixture_manager("hang", Duration::from_secs(2)).await;
-        let launch = manager.launch().await.unwrap_err();
-        assert_eq!(launch.code, "PROCESS_START_TIMEOUT");
-        // The launch timeout cleans the managed process, while the backend's probe semantics
-        // are independently covered by Stage 1. This test ensures a hung host is classified
-        // by host readiness rather than a spurious protocol/transport error.
-        assert!(launch.message.contains("host-ready"));
+        let (_transport, manager) = fixture_manager("hang", Duration::from_millis(500)).await;
+        let launch_manager = manager.clone();
+        let launch = tokio::spawn(async move { launch_manager.launch().await });
+
+        tokio::time::timeout(Duration::from_millis(400), async {
+            loop {
+                let backend = manager.backend().snapshot();
+                if backend.transport == TransportState::Connected
+                    && backend.host == HostState::Unresponsive
+                {
+                    let status = manager.status().await;
+                    assert_eq!(status.state, ProcessState::Starting);
+                    assert_eq!(status.transport, "connected");
+                    assert_eq!(status.host, "unresponsive");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("hung fixture never reached connected/unresponsive classification");
+
+        let error = launch.await.unwrap().unwrap_err();
+        assert_eq!(error.code, "PROCESS_START_TIMEOUT");
+    }
+
+    #[tokio::test]
+    async fn concurrent_lifecycle_operations_are_rejected_deterministically() {
+        let (_transport, manager) = fixture_manager("slow_ready", Duration::from_secs(2)).await;
+        let first_manager = manager.clone();
+        let first_launch = tokio::spawn(async move { first_manager.launch().await });
+
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if manager.status().await.state == ProcessState::Starting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("first lifecycle operation never entered starting state");
+
+        let second_launch = manager.launch().await.unwrap_err();
+        assert_eq!(second_launch.code, "PROCESS_OPERATION_IN_PROGRESS");
+        let concurrent_stop = manager.stop().await.unwrap_err();
+        assert_eq!(concurrent_stop.code, "PROCESS_OPERATION_IN_PROGRESS");
+
+        let started = first_launch.await.unwrap().unwrap();
+        assert_eq!(started.state, ProcessState::Running);
+        manager.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -1463,254 +1131,3 @@ mod tests {
         manager.stop().await.unwrap();
     }
 }
-''')
-
-
-# --- process MCP tool surface and top-level supervisor wrapper ---
-write("crates/bevy-mcp-supervisor/src/process_tools.rs", r'''use bevy_mcp_server::AgentBevyMcpServer;
-use rmcp::handler::server::ServerHandler;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerInfo,
-    Tool,
-};
-use rmcp::service::{RequestContext, RoleServer};
-use rmcp::{ErrorData, handler::server::wrapper::Parameters, schemars, tool, tool_router};
-use serde::Deserialize;
-
-use crate::process_manager::{ProcessError, ProcessManager};
-
-fn format_error(error: ProcessError) -> String {
-    error.to_json().to_string()
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ProcessLogsParams {
-    #[schemars(description = "Optional stream filter: stdout or stderr.")]
-    pub stream: Option<String>,
-    #[schemars(description = "Maximum newest log lines to return (default 200).")]
-    pub limit: Option<u32>,
-}
-
-#[derive(Clone)]
-pub struct ProcessToolServer {
-    manager: ProcessManager,
-}
-
-impl ProcessToolServer {
-    fn new(manager: ProcessManager) -> Self {
-        Self { manager }
-    }
-}
-
-#[tool_router(server_handler)]
-impl ProcessToolServer {
-    #[tool(description = "Return managed/external process ownership plus process, transport, and Bevy-host readiness state.")]
-    async fn process_status(&self) -> String {
-        serde_json::to_string(&self.manager.status().await).unwrap()
-    }
-
-    #[tool(description = "Launch the game executable preconfigured when the supervisor started. Success is returned only after authenticated Bevy host readiness.")]
-    async fn process_launch(&self) -> String {
-        match self.manager.launch().await {
-            Ok(status) => serde_json::to_string(&status).unwrap(),
-            Err(error) => format_error(error),
-        }
-    }
-
-    #[tool(description = "Gracefully stop the supervisor-owned game, then escalate to whole-process-tree termination if necessary. External games are never killed.")]
-    async fn process_stop(&self) -> String {
-        match self.manager.stop().await {
-            Ok(status) => serde_json::to_string(&status).unwrap(),
-            Err(error) => format_error(error),
-        }
-    }
-
-    #[tool(description = "Restart the supervisor-owned game without rebuilding it. Every restart receives a new instance_id and must pass host readiness again.")]
-    async fn process_restart(&self) -> String {
-        match self.manager.restart().await {
-            Ok(status) => serde_json::to_string(&status).unwrap(),
-            Err(error) => format_error(error),
-        }
-    }
-
-    #[tool(description = "Return bounded captured stdout/stderr from the managed game. Game output never shares MCP stdout.")]
-    async fn process_logs(&self, Parameters(params): Parameters<ProcessLogsParams>) -> String {
-        match self
-            .manager
-            .logs(params.stream.as_deref(), params.limit.unwrap_or(200) as usize)
-        {
-            Ok(logs) => serde_json::json!({ "logs": logs, "count": logs.len() }).to_string(),
-            Err(error) => format_error(error),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct SupervisorMcpServer {
-    base: AgentBevyMcpServer,
-    process: ProcessToolServer,
-}
-
-impl SupervisorMcpServer {
-    pub fn new(base: AgentBevyMcpServer, manager: ProcessManager) -> Self {
-        Self {
-            base,
-            process: ProcessToolServer::new(manager),
-        }
-    }
-}
-
-impl ServerHandler for SupervisorMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        self.base.get_info()
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        if self.process.get_tool(request.name.as_ref()).is_some() {
-            self.process.call_tool(request, context).await
-        } else {
-            self.base.call_tool(request, context).await
-        }
-    }
-
-    async fn list_tools(
-        &self,
-        request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let mut base = self.base.list_tools(request.clone(), context.clone()).await?;
-        let process = self.process.list_tools(request, context).await?;
-        base.tools.extend(process.tools);
-        Ok(base)
-    }
-
-    fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.process.get_tool(name).or_else(|| self.base.get_tool(name))
-    }
-}
-''')
-
-# Library exports.
-write("crates/bevy-mcp-supervisor/src/lib.rs", r'''pub mod backend;
-pub mod process_manager;
-pub mod process_tools;
-
-pub use backend::{
-    HostState, ProcessObservation, SupervisorBackend, SupervisorSnapshot, SupervisorTransport,
-    TransportState, generate_instance_id, generate_token,
-};
-pub use process_manager::{
-    LaunchSpec, ProcessError, ProcessLogEntry, ProcessManager, ProcessManagerConfig,
-    ProcessOwnership, ProcessSnapshot, ProcessState,
-};
-pub use process_tools::SupervisorMcpServer;
-''')
-
-# Persistent binary: optional preconfigured managed executable, lifecycle cleanup on MCP disconnect.
-write("crates/bevy-mcp-supervisor/src/main.rs", r'''use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use bevy_mcp_server::AgentBevyMcpServer;
-use bevy_mcp_server::tools::BevyMcpState;
-use bevy_mcp_supervisor::{
-    LaunchSpec, ProcessManager, ProcessManagerConfig, SupervisorMcpServer, SupervisorTransport,
-    generate_instance_id, generate_token,
-};
-use clap::Parser;
-use rmcp::{ServiceExt, transport::stdio};
-use tracing_subscriber::EnvFilter;
-
-#[derive(Debug, Parser)]
-#[command(name = "bevy-mcp", about = "Persistent MCP supervisor for Bevy games")]
-struct Cli {
-    #[arg(long, value_name = "PATH")]
-    game_executable: Option<PathBuf>,
-    #[arg(long = "game-arg", value_name = "ARG")]
-    game_args: Vec<String>,
-    #[arg(long, value_name = "DIR")]
-    game_cwd: Option<PathBuf>,
-    #[arg(long, default_value_t = 20)]
-    ready_timeout_secs: u64,
-    #[arg(long, default_value_t = 3)]
-    stop_grace_secs: u64,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("bevy_mcp_supervisor=debug".parse()?),
-        )
-        .with_writer(std::io::stderr)
-        .init();
-
-    let cli = Cli::parse();
-    let instance_id = generate_instance_id();
-    let token = generate_token();
-    let transport = SupervisorTransport::bind(instance_id.clone(), token.clone()).await?;
-
-    let launch = cli.game_executable.map(|executable| {
-        let mut spec = LaunchSpec::new(executable).args(cli.game_args);
-        if let Some(cwd) = cli.game_cwd {
-            spec = spec.current_dir(cwd);
-        }
-        spec
-    });
-    let manager = ProcessManager::new(
-        transport.backend(),
-        transport.address(),
-        token.clone(),
-        ProcessManagerConfig {
-            launch,
-            ready_timeout: Duration::from_secs(cli.ready_timeout_secs),
-            graceful_stop_timeout: Duration::from_secs(cli.stop_grace_secs),
-            ..Default::default()
-        },
-    );
-
-    eprintln!("bevy-mcp supervisor listening on {}", transport.address());
-    if manager.status().await.executable.is_none() {
-        eprintln!("No managed executable configured; external Stage-1 bridge mode remains available:");
-        eprintln!("  BEVY_MCP_SUPERVISOR_ADDR={}", transport.address());
-        eprintln!("  BEVY_MCP_SUPERVISOR_TOKEN={token}");
-        eprintln!("  BEVY_MCP_INSTANCE_ID={instance_id}");
-    }
-
-    let state = BevyMcpState::from_backend(Arc::new(transport.backend()));
-    let base = AgentBevyMcpServer::new(state);
-    let service = SupervisorMcpServer::new(base, manager.clone())
-        .serve(stdio())
-        .await?;
-    let service_result = service.waiting().await;
-    if let Err(error) = manager.shutdown_owned().await {
-        tracing::error!(code = error.code, message = %error.message, "failed to clean up managed game during supervisor shutdown");
-    }
-    service_result?;
-    Ok(())
-}
-''')
-
-# Permanent CI platform gate: full Ubuntu workspace + focused Windows supervisor lifecycle tests.
-path = ".github/workflows/ci.yml"
-text = read(path)
-if "process-windows:" not in text:
-    text += r'''
-
-  process-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Check supervisor on Windows
-        run: cargo check -p bevy-mcp-supervisor --all-targets
-      - name: Test supervisor process lifecycle on Windows
-        run: cargo test -p bevy-mcp-supervisor --lib
-'''
-write(path, text)
-
-print("Stage 2 process manager sources integrated")
