@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/transport-state-secondary-connection
+  pull_request:
+    branches:
+      - v.01
 
 permissions:
   contents: write
