@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bevy_mcp_core::command::{McpCommand, McpResult};
@@ -12,6 +12,30 @@ use crate::response_dispatcher::{DispatchError, McpResponseDispatcher, format_re
 pub type BackendFuture<'a> =
     Pin<Box<dyn Future<Output = Result<McpResult, GameCallError>> + Send + 'a>>;
 pub type SharedGameCommandBackend = Arc<dyn GameCommandBackend>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendMode {
+    Embedded,
+    Supervised,
+}
+
+impl BackendMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Embedded => "embedded",
+            Self::Supervised => "supervised",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameBackendStatus {
+    pub mode: BackendMode,
+    pub connected: bool,
+    pub ready: bool,
+    pub instance_id: Option<String>,
+    pub connection_id: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameCallError {
@@ -30,11 +54,13 @@ impl GameCallError {
 
 pub trait GameCommandBackend: Send + Sync {
     fn call(&self, command: McpCommand, timeout: Duration) -> BackendFuture<'_>;
+    fn status(&self) -> GameBackendStatus;
 }
 
 #[derive(Clone)]
 pub struct EmbeddedBackend {
     dispatcher: McpResponseDispatcher,
+    connected: Arc<AtomicBool>,
 }
 
 impl EmbeddedBackend {
@@ -44,7 +70,8 @@ impl EmbeddedBackend {
         connected: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            dispatcher: McpResponseDispatcher::new(ingress, results, connected),
+            dispatcher: McpResponseDispatcher::new(ingress, results, connected.clone()),
+            connected,
         }
     }
 }
@@ -73,6 +100,17 @@ impl GameCommandBackend for EmbeddedBackend {
                     ),
                 })
         })
+    }
+
+    fn status(&self) -> GameBackendStatus {
+        let connected = self.connected.load(Ordering::Relaxed);
+        GameBackendStatus {
+            mode: BackendMode::Embedded,
+            connected,
+            ready: connected,
+            instance_id: connected.then(|| "default".to_string()),
+            connection_id: None,
+        }
     }
 }
 
