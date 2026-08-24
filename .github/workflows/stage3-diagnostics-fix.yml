@@ -25,17 +25,26 @@ jobs:
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev
-      - name: Apply structured diagnostics fix
+      - name: Apply Stage 3 acceptance fixes
         shell: python
         run: |
           from pathlib import Path
-          path = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
-          text = path.read_text()
+
+          executor = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
+          text = executor.read_text()
           old = '"--message-format=json-render-diagnostics".to_string(),'
           new = '"--message-format=json".to_string(),'
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
+          executor.write_text(text.replace(old, new))
+
+          acceptance = Path('crates/bevy-mcp-supervisor/src/cargo_executor_acceptance.rs')
+          text = acceptance.read_text()
+          old = 'span.file_name.ends_with("src/main.rs")'
+          new = 'span.file_name.replace(\'\\\\\', "/").ends_with("src/main.rs")'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one path assertion occurrence, found {text.count(old)}')
+          acceptance.write_text(text.replace(old, new))
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -53,17 +62,26 @@ jobs:
         with:
           ref: stage3/cargo-executor
       - uses: dtolnay/rust-toolchain@stable
-      - name: Apply structured diagnostics fix
+      - name: Apply Stage 3 acceptance fixes
         shell: python
         run: |
           from pathlib import Path
-          path = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
-          text = path.read_text()
+
+          executor = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
+          text = executor.read_text()
           old = '"--message-format=json-render-diagnostics".to_string(),'
           new = '"--message-format=json".to_string(),'
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
+          executor.write_text(text.replace(old, new))
+
+          acceptance = Path('crates/bevy-mcp-supervisor/src/cargo_executor_acceptance.rs')
+          text = acceptance.read_text()
+          old = 'span.file_name.ends_with("src/main.rs")'
+          new = 'span.file_name.replace(\'\\\\\', "/").ends_with("src/main.rs")'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one path assertion occurrence, found {text.count(old)}')
+          acceptance.write_text(text.replace(old, new))
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -82,20 +100,29 @@ jobs:
         with:
           ref: stage3/cargo-executor
       - uses: dtolnay/rust-toolchain@stable
-      - name: Apply validated fix and formatting
+      - name: Apply validated Stage 3 fixes
         shell: python
         run: |
           from pathlib import Path
-          path = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
-          text = path.read_text()
+
+          executor = Path('crates/bevy-mcp-supervisor/src/cargo_executor.rs')
+          text = executor.read_text()
           old = '"--message-format=json-render-diagnostics".to_string(),'
           new = '"--message-format=json".to_string(),'
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one diagnostic mode occurrence, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
+          executor.write_text(text.replace(old, new))
+
+          acceptance = Path('crates/bevy-mcp-supervisor/src/cargo_executor_acceptance.rs')
+          text = acceptance.read_text()
+          old = 'span.file_name.ends_with("src/main.rs")'
+          new = 'span.file_name.replace(\'\\\\\', "/").ends_with("src/main.rs")'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one path assertion occurrence, found {text.count(old)}')
+          acceptance.write_text(text.replace(old, new))
       - name: Format
         run: cargo fmt --all
-      - name: Commit validated fix and remove workflow
+      - name: Commit validated fixes and remove workflow
         run: |
           rm .github/workflows/stage3-diagnostics-fix.yml
           git config user.name github-actions[bot]
