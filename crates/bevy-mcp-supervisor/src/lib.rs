@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod cargo_executor;
+pub mod development_status;
 pub mod permissions;
 pub mod process_manager;
 pub mod process_tools;
@@ -17,6 +18,10 @@ pub use backend::{
 pub use cargo_executor::{
     CargoError, CargoExecutor, CargoExecutorConfig, CargoInvocation, CargoOperationKind,
     CargoOperationSnapshot, CargoOperationState, CargoRunResult,
+};
+pub use development_status::{
+    DevelopmentFailure, DevelopmentGeneration, DevelopmentOperationRef, DevelopmentProjectStatus,
+    DevelopmentState, DevelopmentStatus, RecoveryAction,
 };
 pub use permissions::SupervisorPermissions;
 pub use process_manager::{
