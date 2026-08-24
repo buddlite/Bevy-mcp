@@ -1,0 +1,104 @@
+name: Fix transport-state secondary connection race
+
+on:
+  push:
+    branches:
+      - fix/transport-state-secondary-connection
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/transport-state-secondary-connection
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply focused fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/bevy-mcp-supervisor/src/backend.rs')
+          text = path.read_text()
+
+          old = '''async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) -> io::Result<()> {
+              *backend.inner.transport.lock().unwrap() = TransportState::Connecting;
+              let envelope = read_envelope(&mut stream, backend.inner.maximum_frame_size).await?;
+          '''
+          new = '''async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) -> io::Result<()> {
+              let envelope = read_envelope(&mut stream, backend.inner.maximum_frame_size).await?;
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'accept_connection anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''        return Ok(());
+              }
+
+              let connection_id = format!("conn-{}", Uuid::new_v4().simple());
+          '''
+          new = '''        return Ok(());
+              }
+
+              *backend.inner.transport.lock().unwrap() = TransportState::Connecting;
+              let connection_id = format!("conn-{}", Uuid::new_v4().simple());
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'post-validation anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''        let (_first, _) = fake_hello(transport.address(), "secret", "run-test").await;
+          '''
+          new = '''        let (_first, first_connection_id) =
+              fake_hello(transport.address(), "secret", "run-test").await;
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'second-game setup anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''            other => panic!("expected rejection, got {other:?}"),
+              }
+          }
+          '''
+          new = '''            other => panic!("expected rejection, got {other:?}"),
+              }
+
+              let snapshot = transport.backend().snapshot();
+              assert_eq!(snapshot.transport, TransportState::Connected);
+              assert_eq!(
+                  snapshot.connection_id.as_deref(),
+                  Some(first_connection_id.as_str())
+              );
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'second-game assertion anchor count: {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+          cargo fmt --all
+      - name: Validate supervisor
+        run: |
+          cargo check -p bevy-mcp-supervisor --all-targets
+          cargo test -p bevy-mcp-supervisor --lib
+      - name: Commit focused fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- crates/bevy-mcp-supervisor/src/backend.rs
+          git commit -m "Keep active transport state stable on rejected connections"
+          git push origin HEAD:fix/transport-state-secondary-connection
