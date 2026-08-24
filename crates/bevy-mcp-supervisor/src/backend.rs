@@ -403,7 +403,6 @@ async fn accept_loop(listener: TcpListener, backend: SupervisorBackend) {
 }
 
 async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) -> io::Result<()> {
-    *backend.inner.transport.lock().unwrap() = TransportState::Connecting;
     let envelope = read_envelope(&mut stream, backend.inner.maximum_frame_size).await?;
     let expected_instance_id = backend.expected_instance_id();
     let peer_pid = match &envelope.message {
@@ -459,6 +458,7 @@ async fn accept_connection(mut stream: TcpStream, backend: SupervisorBackend) ->
         return Ok(());
     }
 
+    *backend.inner.transport.lock().unwrap() = TransportState::Connecting;
     let connection_id = format!("conn-{}", Uuid::new_v4().simple());
     let (reader, writer) = stream.into_split();
     let writer = Arc::new(tokio::sync::Mutex::new(writer));
@@ -915,7 +915,8 @@ mod tests {
         let transport = SupervisorTransport::bind("run-test", "secret")
             .await
             .unwrap();
-        let (_first, _) = fake_hello(transport.address(), "secret", "run-test").await;
+        let (_first, first_connection_id) =
+            fake_hello(transport.address(), "secret", "run-test").await;
         let mut second = TcpStream::connect(transport.address()).await.unwrap();
         write_envelope(
             &mut second,
@@ -939,5 +940,12 @@ mod tests {
             }
             other => panic!("expected rejection, got {other:?}"),
         }
+
+        let snapshot = transport.backend().snapshot();
+        assert_eq!(snapshot.transport, TransportState::Connected);
+        assert_eq!(
+            snapshot.connection_id.as_deref(),
+            Some(first_connection_id.as_str())
+        );
     }
 }
