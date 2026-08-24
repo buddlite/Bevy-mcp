@@ -96,6 +96,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Cargo.lock .github/workflows/ci.yml crates/bevy-mcp-host crates/bevy-mcp-supervisor
-          git rm -- scripts/bootstrap_supervisor_stage2.py scripts/prepare_supervisor_stage2.py scripts/fix_supervisor_stage2_lifecycle.py .github/workflows/bootstrap-supervisor-stage2.yml
+          git rm -f -- scripts/bootstrap_supervisor_stage2.py scripts/prepare_supervisor_stage2.py scripts/fix_supervisor_stage2_lifecycle.py .github/workflows/bootstrap-supervisor-stage2.yml
           git commit -m "Implement supervisor process manager stage 2"
           git push origin HEAD:stage2/process-manager
