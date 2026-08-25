@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
@@ -164,7 +164,10 @@ async fn assert_cargo_permission_denied(
     let project = TempProject::new("fn main() {}\n");
     let executor = executor(&project, permissions).await;
     assert!(executor.available(), "fixture metadata should be available");
-    assert!(!project.spawn_marker().exists(), "cargo metadata must not run build.rs");
+    assert!(
+        !project.spawn_marker().exists(),
+        "cargo metadata must not run build.rs"
+    );
 
     let error = match kind {
         CargoOperationKind::Check => executor.start_check(invocation()),
@@ -203,7 +206,10 @@ async fn wait_cargo(executor: &CargoExecutor, operation_id: &str) -> CargoOperat
         ) {
             return snapshot;
         }
-        assert!(Instant::now() < deadline, "Cargo operation timed out in test");
+        assert!(
+            Instant::now() < deadline,
+            "Cargo operation timed out in test"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -301,14 +307,22 @@ async fn rebuild_restart_permission_denial_preserves_running_game_and_starts_no_
     assert_eq!(initial.ownership, ProcessOwnership::Managed);
     let cargo_operation_count = executor.status(None).unwrap().len();
 
-    for field in ["cargo_check", "cargo_build", "process_stop", "process_launch"] {
+    for field in [
+        "cargo_check",
+        "cargo_build",
+        "process_stop",
+        "process_launch",
+    ] {
         let coordinator = RebuildRestartCoordinator::new(
             manager.clone(),
             executor.clone(),
             permissions_without(field),
         );
         let error = coordinator.start(invocation()).unwrap_err();
-        assert_eq!(error.code, "SUPERVISOR_PERMISSION_DENIED", "field={field}");
+        assert_eq!(
+            error.code, "SUPERVISOR_PERMISSION_DENIED",
+            "field={field}"
+        );
         assert_eq!(error.details[field], false, "field={field}");
         assert!(
             coordinator.status(None).unwrap().is_empty(),
