@@ -17,7 +17,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -30,7 +30,9 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
       - name: Apply repository cleanup
-        run: python -X utf8 .github/repo_cleanup_apply.py
+        run: |
+          python -X utf8 .github/repo_cleanup_apply.py
+          python -X utf8 .github/repo_cleanup_lints.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -45,12 +47,14 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Apply repository cleanup
-        run: python -X utf8 .github/repo_cleanup_apply.py
+        run: |
+          python -X utf8 .github/repo_cleanup_apply.py
+          python -X utf8 .github/repo_cleanup_lints.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -64,7 +68,7 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: audit/repo-cleanup
           fetch-depth: 0
@@ -72,12 +76,15 @@ jobs:
         with:
           components: rustfmt
       - name: Apply validated cleanup
-        run: python -X utf8 .github/repo_cleanup_apply.py
+        run: |
+          python -X utf8 .github/repo_cleanup_apply.py
+          python -X utf8 .github/repo_cleanup_lints.py
       - name: Format validated source
         run: cargo fmt --all
       - name: Remove temporary validation files
         run: |
           rm .github/repo_cleanup_apply.py
+          rm .github/repo_cleanup_lints.py
           rm .github/workflows/repo-cleanup-validation.yml
       - name: Commit validated cleanup
         run: |
@@ -92,11 +99,17 @@ jobs:
             README.md \
             .github/workflows/ci.yml \
             .github/repo_cleanup_apply.py \
+            .github/repo_cleanup_lints.py \
             .github/workflows/repo-cleanup-validation.yml \
             config/README.md \
             crates/bevy-mcp-core/Cargo.toml \
+            crates/bevy-mcp-core/src/debug.rs \
             crates/bevy-mcp-host/Cargo.toml \
+            crates/bevy-mcp-host/src/change_tracking.rs \
+            crates/bevy-mcp-host/src/debugger.rs \
+            crates/bevy-mcp-host/src/systems/camera.rs \
             crates/bevy-mcp-server/Cargo.toml \
+            crates/bevy-mcp-server/src/debug_tools.rs \
             crates/bevy-mcp-supervisor/Cargo.toml \
             examples/e2e/Cargo.toml \
             crates/bevy-mcp-supervisor/src/cargo_executor.rs \
