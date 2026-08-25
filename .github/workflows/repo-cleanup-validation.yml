@@ -33,6 +33,7 @@ jobs:
         run: |
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
+          python -X utf8 .github/repo_cleanup_clippy2.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -55,6 +56,7 @@ jobs:
         run: |
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
+          python -X utf8 .github/repo_cleanup_clippy2.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -79,12 +81,14 @@ jobs:
         run: |
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
+          python -X utf8 .github/repo_cleanup_clippy2.py
       - name: Format validated source
         run: cargo fmt --all
       - name: Remove temporary validation files
         run: |
           rm .github/repo_cleanup_apply.py
           rm .github/repo_cleanup_lints.py
+          rm .github/repo_cleanup_clippy2.py
           rm .github/workflows/repo-cleanup-validation.yml
       - name: Commit validated cleanup
         run: |
@@ -100,6 +104,7 @@ jobs:
             .github/workflows/ci.yml \
             .github/repo_cleanup_apply.py \
             .github/repo_cleanup_lints.py \
+            .github/repo_cleanup_clippy2.py \
             .github/workflows/repo-cleanup-validation.yml \
             config/README.md \
             crates/bevy-mcp-core/Cargo.toml \
@@ -107,7 +112,10 @@ jobs:
             crates/bevy-mcp-host/Cargo.toml \
             crates/bevy-mcp-host/src/change_tracking.rs \
             crates/bevy-mcp-host/src/debugger.rs \
+            crates/bevy-mcp-host/src/interaction.rs \
+            crates/bevy-mcp-host/src/queue.rs \
             crates/bevy-mcp-host/src/systems/camera.rs \
+            crates/bevy-mcp-host/src/systems/dispatch.rs \
             crates/bevy-mcp-host/tests/agent_debugger.rs \
             crates/bevy-mcp-server/Cargo.toml \
             crates/bevy-mcp-server/src/debug_tools.rs \
