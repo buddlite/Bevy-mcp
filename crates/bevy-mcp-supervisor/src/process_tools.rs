@@ -645,3 +645,55 @@ impl ServerHandler for SupervisorMcpServer {
             .or_else(|| self.base.get_tool(name))
     }
 }
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    use crate::{CargoExecutorConfig, ProcessManagerConfig, SupervisorTransport};
+
+    async fn read_only_server() -> (SupervisorToolServer, ProcessManager) {
+        let transport = SupervisorTransport::bind("permission-tool-test", "permission-tool-secret")
+            .await
+            .unwrap();
+        let manager = ProcessManager::new(
+            transport.backend(),
+            transport.address(),
+            "permission-tool-secret",
+            ProcessManagerConfig::default(),
+        );
+        let cargo = CargoExecutor::initialize(CargoExecutorConfig {
+            permissions: SupervisorPermissions::read_only(),
+            ..CargoExecutorConfig::new(env!("CARGO_MANIFEST_DIR"))
+        })
+        .await;
+        let server =
+            SupervisorToolServer::new(manager.clone(), cargo, SupervisorPermissions::read_only());
+        (server, manager)
+    }
+
+    #[tokio::test]
+    async fn lifecycle_tools_deny_before_touching_process_state() {
+        let (server, manager) = read_only_server().await;
+        let before = manager.status().await;
+
+        for (operation, response) in [
+            ("process_launch", server.process_launch().await),
+            ("process_stop", server.process_stop().await),
+            ("process_restart", server.process_restart().await),
+        ] {
+            let value: Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(value["error"], "SUPERVISOR_PERMISSION_DENIED");
+            assert!(
+                value["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(operation))
+            );
+            let after = manager.status().await;
+            assert_eq!(after.state, before.state);
+            assert_eq!(after.ownership, before.ownership);
+            assert_eq!(after.pid, before.pid);
+            assert_eq!(after.instance_id, before.instance_id);
+            assert_eq!(after.connection_id, before.connection_id);
+        }
+    }
+}
