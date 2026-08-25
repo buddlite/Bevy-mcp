@@ -120,6 +120,7 @@ jobs:
             crates/bevy-mcp-supervisor/src/stage4_acceptance.rs \
             crates/bevy-mcp-supervisor/src/supervisor_acceptance.rs \
             docs/README.md \
+            docs/supervised-mode.md \
             docs/supervisor-implementation-spec.md \
             docs/guides/claude-code.md \
             docs/guides/claude-desktop.md \
