@@ -216,7 +216,7 @@ edit source -> rebuild_restart -> cargo check while old game stays live
                               -> inspect/interact/assert/debug
 ```
 
-`rebuild_restart` is asynchronous and returns a `supervisor:rebuild_restart:*` operation ID. Poll it with `operation_status`; use `process_evidence` for bounded stdout/stderr plus process state when startup or runtime failures need diagnosis. A failed preflight check leaves the old managed game untouched. A build failure after the stop phase deliberately leaves the game stopped rather than relaunching stale code.
+`development_status` is the normal agent-facing entry point for supervised diagnosis: it condenses the current process/build state, active operation, latest compiler or crash evidence, and recommended next action into one response. `rebuild_restart` is asynchronous and returns a `supervisor:rebuild_restart:*` operation ID. Poll it with `operation_status`; use `process_evidence` when deeper stdout/stderr context is useful. A failed preflight check leaves the old managed game untouched. A build failure after the stop phase deliberately leaves the game stopped rather than relaunching stale code.
 
 See **[Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md)** for game instrumentation, MCP client configuration, zero-config target discovery, lifecycle permissions, failure semantics, and troubleshooting.
 

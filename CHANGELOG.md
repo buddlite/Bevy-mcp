@@ -20,6 +20,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Persistent supervisor transport and process lifecycle management, including authenticated game reconnection, instance/connection generations, frame-aware readiness, managed launch/stop/restart, bounded process logs, and cross-platform process-tree ownership.
 - Supervisor Cargo execution for `build_check`, `build`, and `test`, with `cargo metadata` target discovery, typed package/bin/profile/features/test-filter parameters, structured compiler diagnostics and executable artifacts, bounded output, asynchronous `supervisor:*` operation IDs, cancellation/timeouts, one-operation-at-a-time locking, and supervisor-local permissions.
 - Stage 4 supervised development-cycle tooling: asynchronous `rebuild_restart`, conservative check-before-stop sequencing, Cargo-artifact launch, new instance/connection validation, merged host/supervisor capabilities, and bounded startup/crash evidence.
+- Agent-oriented `development_status` diagnostics that collapse process/Cargo/rebuild state into one normalized development state, current generation identity, latest structured failure evidence, and a deterministic recommended recovery action.
 
 ### Changed
 
