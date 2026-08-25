@@ -37,7 +37,7 @@ text = replace_once(
 )
 write(path, text)
 
-# Use Bevy's registry indexes so ambiguous short type paths never select an arbitrary registration.
+# Use Bevy's indexed TypeRegistry APIs so ambiguous short names never pick an arbitrary type.
 for path in [
     "crates/bevy-mcp-host/src/systems/resources.rs",
     "crates/bevy-mcp-host/src/systems/ecs_mutate.rs",
@@ -82,9 +82,6 @@ text = re.sub(
     "crate::systems::find_type_registration(&registry, requested)",
     text,
 )
-
-# Debugger key actions run in PostUpdate. Queue them for the next PreUpdate input phase instead
-# of writing a transient ButtonInput edge that Bevy would clear before gameplay sees it.
 text = sub_once(
     text,
     r"fn apply_key\(world: &mut World, key: &str, pressed: bool\) -> Result<\(\), String> \{.*?\n\}\n\nfn parse_keycode",
@@ -94,10 +91,9 @@ text = sub_once(
 text = replace_once(
     text,
     "                    complete_step(\n                        session,\n                        frame,\n                        json!({ \"type\": \"key\", \"key\": key, \"pressed\": pressed }),\n                    );\n                }",
-    "                    complete_step(\n                        session,\n                        frame,\n                        json!({ \"type\": \"key\", \"key\": key, \"pressed\": pressed, \"queued_for_next_input_phase\": true }),\n                    );\n                    // Let Bevy apply the queued edge in the next PreUpdate before advancing.\n                    return;\n                }",
-    "debugger key step frame boundary",
+    "                    complete_step(\n                        session,\n                        frame,\n                        json!({ \"type\": \"key\", \"key\": key, \"pressed\": pressed, \"queued_for_next_input_phase\": true }),\n                    );\n                    return;\n                }",
+    "debugger key frame boundary",
 )
-# The key mapping now lives in synthetic_input; remove the duplicate debugger mapping.
 text = sub_once(
     text,
     r"\nfn parse_keycode\(key: &str\) -> Option<KeyCode> \{.*?\n\}\n\nfn push_result",
@@ -106,8 +102,7 @@ text = sub_once(
 )
 write(path, text)
 
-# Validate hierarchy changes completely before mutating ChildOf. Inserting a new ChildOf lets
-# Bevy's relationship hooks update the old/new Children collections atomically.
+# Reparent only after the requested hierarchy is fully validated.
 path = "crates/bevy-mcp-host/src/systems/ecs_mutate.rs"
 text = read(path)
 new_reparent = r'''pub(crate) fn entity_reparent(
@@ -119,53 +114,31 @@ new_reparent = r'''pub(crate) fn entity_reparent(
 
     let entity = match resolve_entity(world, entity_handle) {
         Some(entity) => entity,
-        None => {
-            return McpResult::error(
-                "ENTITY_NOT_FOUND",
-                format!("Entity {entity_handle} not found"),
-            );
-        }
+        None => return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {entity_handle} not found")),
     };
-
     let parent = match parent_handle {
         Some(parent_handle) => match resolve_entity(world, parent_handle) {
             Some(parent) => Some(parent),
-            None => {
-                return McpResult::error(
-                    "ENTITY_NOT_FOUND",
-                    format!("Parent entity {parent_handle} not found"),
-                );
-            }
+            None => return McpResult::error("ENTITY_NOT_FOUND", format!("Parent entity {parent_handle} not found")),
         },
         None => None,
     };
 
     if let Some(parent) = parent {
         if parent == entity {
-            return McpResult::error(
-                "INVALID_HIERARCHY",
-                "An entity cannot be its own parent",
-            );
+            return McpResult::error("INVALID_HIERARCHY", "An entity cannot be its own parent");
         }
-
         let mut cursor = Some(parent);
         let mut visited = std::collections::HashSet::new();
         while let Some(current) = cursor {
             if current == entity {
-                return McpResult::error(
-                    "INVALID_HIERARCHY",
-                    "Reparenting would create a hierarchy cycle",
-                );
+                return McpResult::error("INVALID_HIERARCHY", "Reparenting would create a hierarchy cycle");
             }
             if !visited.insert(current) {
-                return McpResult::error(
-                    "INVALID_HIERARCHY",
-                    "Existing parent chain contains a hierarchy cycle",
-                );
+                return McpResult::error("INVALID_HIERARCHY", "Existing parent chain contains a hierarchy cycle");
             }
             cursor = world.get::<ChildOf>(current).map(ChildOf::parent);
         }
-
         let Ok(mut entity_ref) = world.get_entity_mut(entity) else {
             return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {entity_handle} not found"));
         };
@@ -179,9 +152,7 @@ new_reparent = r'''pub(crate) fn entity_reparent(
             return McpResult::error("ENTITY_NOT_FOUND", format!("Entity {entity_handle} not found"));
         };
         entity_ref.remove::<ChildOf>();
-        McpResult::success(
-            json!({ "reparented": entity_to_uri(world, entity), "new_parent": null }),
-        )
+        McpResult::success(json!({ "reparented": entity_to_uri(world, entity), "new_parent": null }))
     }
 }
 '''
@@ -191,8 +162,7 @@ text = sub_once(
     new_reparent + "\npub(crate) fn entity_duplicate",
     "safe entity reparent",
 )
-
-hierarchy_tests = r'''
+text += r'''
 
 #[cfg(test)]
 mod bevy_019_hierarchy_tests {
@@ -202,10 +172,7 @@ mod bevy_019_hierarchy_tests {
 
     fn handle(entity: Entity) -> bevy_mcp_core::entity_handle::EntityHandle {
         bevy_mcp_core::entity_handle::EntityHandle::new(
-            "test",
-            "main",
-            entity.index().index() as u64,
-            entity.generation().to_bits() as u64,
+            "test", "main", entity.index().index() as u64, entity.generation().to_bits() as u64,
         )
     }
 
@@ -218,7 +185,6 @@ mod bevy_019_hierarchy_tests {
         let missing = world.spawn_empty().id();
         let missing_handle = handle(missing);
         world.despawn(missing);
-
         let result = entity_reparent(&mut world, &handle(child), Some(&missing_handle));
         assert!(matches!(result, McpResult::Error { ref code, .. } if code == "ENTITY_NOT_FOUND"));
         assert_eq!(world.get::<ChildOf>(child).map(ChildOf::parent), Some(old_parent));
@@ -231,10 +197,8 @@ mod bevy_019_hierarchy_tests {
         world.insert_resource(McpInstanceId::new("test"));
         let root = world.spawn_empty().id();
         let child = world.spawn(ChildOf(root)).id();
-
         let self_result = entity_reparent(&mut world, &handle(root), Some(&handle(root)));
         assert!(matches!(self_result, McpResult::Error { ref code, .. } if code == "INVALID_HIERARCHY"));
-
         let cycle_result = entity_reparent(&mut world, &handle(root), Some(&handle(child)));
         assert!(matches!(cycle_result, McpResult::Error { ref code, .. } if code == "INVALID_HIERARCHY"));
         assert_eq!(world.get::<ChildOf>(child).map(ChildOf::parent), Some(root));
@@ -248,7 +212,6 @@ mod bevy_019_hierarchy_tests {
         let old_parent = world.spawn_empty().id();
         let new_parent = world.spawn_empty().id();
         let child = world.spawn(ChildOf(old_parent)).id();
-
         let result = entity_reparent(&mut world, &handle(child), Some(&handle(new_parent)));
         assert!(matches!(result, McpResult::Success(_)));
         assert_eq!(world.get::<ChildOf>(child).map(ChildOf::parent), Some(new_parent));
@@ -257,11 +220,8 @@ mod bevy_019_hierarchy_tests {
     }
 }
 '''
-text += hierarchy_tests
 write(path, text)
 
-# Keep schedule documentation honest: the Apply set contains runtime/input control, while reflected
-# world mutations are deliberately deferred to Update.
 path = "crates/bevy-mcp-host/src/schedule.rs"
 text = read(path)
 text = text.replace(
@@ -270,7 +230,7 @@ text = text.replace(
 )
 write(path, text)
 
-# Deterministically target the lowest entity-id gamepad until the wire protocol gains an explicit selector.
+# Deterministically target the lowest entity-id gamepad until the protocol adds a selector.
 path = "crates/bevy-mcp-host/src/synthetic_input.rs"
 text = read(path)
 text = replace_once(
@@ -281,7 +241,7 @@ text = replace_once(
 )
 write(path, text)
 
-# Rust 1.98 Clippy cleanup surfaced by the stricter repository gate.
+# Strict Rust 1.98 Clippy cleanup.
 path = "crates/bevy-mcp-host/src/operations.rs"
 text = read(path)
 text = replace_once(
@@ -304,7 +264,19 @@ write(path, text)
 
 path = "crates/bevy-mcp-host/src/systems/procedural.rs"
 text = read(path)
-old_block = '''        if let Some(registration) = registration {
+text = replace_once(
+    text,
+    '''        let registration = registry.iter().find(|r| {
+            let tp = r.type_info().type_path_table();
+            tp.short_path() == short_name || tp.path() == component_name
+        });''',
+    '''        let registration = find_type_registration(&registry, &component_name)
+            .or_else(|| find_type_registration(&registry, &short_name));''',
+    "procedural safe registry lookup",
+)
+text = replace_once(
+    text,
+    '''        if let Some(registration) = registration {
             if let Some(reflect_component) =
                 registration.data::<bevy::ecs::reflect::ReflectComponent>()
             {
@@ -324,10 +296,9 @@ old_block = '''        if let Some(registration) = registration {
                     }
                 }
             }
-        }'''
-new_block = '''        if let Some(registration) = registration
-            && let Some(reflect_component) =
-                registration.data::<bevy::ecs::reflect::ReflectComponent>()
+        }''',
+    '''        if let Some(registration) = registration
+            && let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>()
             && let Some(reflected) = reflect_component.reflect(entity_ref)
         {
             let serializer = bevy::reflect::serde::ReflectSerializer::new(
@@ -343,8 +314,9 @@ new_block = '''        if let Some(registration) = registration
                 }
                 components_json.insert(short_name, value);
             }
-        }'''
-text = replace_once(text, old_block, new_block, "procedural reflect block")
+        }''',
+    "procedural reflect block",
+)
 text = replace_once(
     text,
     '''    if let Some(parent) = std::path::Path::new(&file_path).parent() {
@@ -387,19 +359,18 @@ text = replace_once(
     text,
     "        let mut registry = McpRegistry::default();\n        registry.time_scale = 1.0;",
     "        let mut registry = McpRegistry {\n            time_scale: 1.0,\n            ..Default::default()\n        };",
-    "runtime test default init",
+    "runtime test init",
 )
 write(path, text)
 
-# Regression-test Bevy's ambiguity semantics directly at our central lookup boundary.
 path = "crates/bevy-mcp-host/src/systems.rs"
 text = read(path)
-reflection_tests = r'''
+text += r'''
 
 #[cfg(test)]
 mod bevy_019_type_registry_tests {
     use super::*;
-    use bevy::reflect::{Reflect, TypePath, TypeRegistry};
+    use bevy::reflect::{TypePath, TypeRegistry};
 
     mod left {
         use bevy::reflect::Reflect;
@@ -418,18 +389,12 @@ mod bevy_019_type_registry_tests {
         let mut registry = TypeRegistry::default();
         registry.register::<left::Duplicate>();
         registry.register::<right::Duplicate>();
-
         assert!(registry.is_ambiguous("Duplicate"));
         assert!(find_type_registration(&registry, "Duplicate").is_none());
-        assert!(find_type_registration(
-            &registry,
-            <left::Duplicate as TypePath>::type_path(),
-        )
-        .is_some());
+        assert!(find_type_registration(&registry, <left::Duplicate as TypePath>::type_path()).is_some());
     }
 }
 '''
-text += reflection_tests
 write(path, text)
 
 print("Applied Bevy 0.19 correctness patches")
