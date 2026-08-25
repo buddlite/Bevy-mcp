@@ -51,15 +51,17 @@ jobs:
           git rm .github/bevy019_apply.py .github/workflows/bevy019-validation.yml
           git add -- \
             crates/bevy-mcp-host/src/debugger.rs \
+            crates/bevy-mcp-host/src/operations.rs \
+            crates/bevy-mcp-host/src/plugin.rs \
             crates/bevy-mcp-host/src/schedule.rs \
+            crates/bevy-mcp-host/src/synthetic_input.rs \
+            crates/bevy-mcp-host/src/systems.rs \
             crates/bevy-mcp-host/src/systems/capabilities.rs \
             crates/bevy-mcp-host/src/systems/ecs_inspect.rs \
             crates/bevy-mcp-host/src/systems/ecs_mutate.rs \
+            crates/bevy-mcp-host/src/systems/procedural.rs \
             crates/bevy-mcp-host/src/systems/resources.rs \
-            crates/bevy-mcp-host/src/synthetic_input.rs \
-            crates/bevy-mcp-host/src/plugin.rs \
             crates/bevy-mcp-host/src/systems/runtime.rs \
-            crates/bevy-mcp-host/src/systems.rs \
             crates/bevy-mcp-host/src/lib.rs \
             Cargo.toml
           git diff --cached --check
