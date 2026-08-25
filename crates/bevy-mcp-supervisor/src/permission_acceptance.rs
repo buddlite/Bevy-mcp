@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::{
-    CargoExecutor, CargoExecutorConfig, CargoInvocation, CargoOperationKind, CargoOperationSnapshot,
-    CargoOperationState, ProcessManager, ProcessManagerConfig, ProcessOwnership, ProcessSnapshot,
-    ProcessState, RebuildRestartCoordinator, SupervisorPermissions, SupervisorTransport,
+    CargoExecutor, CargoExecutorConfig, CargoInvocation, CargoOperationKind,
+    CargoOperationSnapshot, CargoOperationState, ProcessManager, ProcessManagerConfig,
+    ProcessOwnership, ProcessSnapshot, ProcessState, RebuildRestartCoordinator,
+    SupervisorPermissions, SupervisorTransport,
 };
 
 const MANAGED_FIXTURE_SOURCE: &str = r#"
@@ -319,10 +320,7 @@ async fn rebuild_restart_permission_denial_preserves_running_game_and_starts_no_
             permissions_without(field),
         );
         let error = coordinator.start(invocation()).unwrap_err();
-        assert_eq!(
-            error.code, "SUPERVISOR_PERMISSION_DENIED",
-            "field={field}"
-        );
+        assert_eq!(error.code, "SUPERVISOR_PERMISSION_DENIED", "field={field}");
         assert_eq!(error.details[field], false, "field={field}");
         assert!(
             coordinator.status(None).unwrap().is_empty(),
