@@ -34,6 +34,7 @@ jobs:
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
           python -X utf8 .github/repo_cleanup_clippy2.py
+          python -X utf8 .github/repo_cleanup_clippy3.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -57,6 +58,7 @@ jobs:
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
           python -X utf8 .github/repo_cleanup_clippy2.py
+          python -X utf8 .github/repo_cleanup_clippy3.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -82,6 +84,7 @@ jobs:
           python -X utf8 .github/repo_cleanup_apply.py
           python -X utf8 .github/repo_cleanup_lints.py
           python -X utf8 .github/repo_cleanup_clippy2.py
+          python -X utf8 .github/repo_cleanup_clippy3.py
       - name: Format validated source
         run: cargo fmt --all
       - name: Remove temporary validation files
@@ -89,6 +92,7 @@ jobs:
           rm .github/repo_cleanup_apply.py
           rm .github/repo_cleanup_lints.py
           rm .github/repo_cleanup_clippy2.py
+          rm .github/repo_cleanup_clippy3.py
           rm .github/workflows/repo-cleanup-validation.yml
       - name: Commit validated cleanup
         run: |
@@ -105,6 +109,7 @@ jobs:
             .github/repo_cleanup_apply.py \
             .github/repo_cleanup_lints.py \
             .github/repo_cleanup_clippy2.py \
+            .github/repo_cleanup_clippy3.py \
             .github/workflows/repo-cleanup-validation.yml \
             config/README.md \
             crates/bevy-mcp-core/Cargo.toml \
@@ -124,6 +129,8 @@ jobs:
             crates/bevy-mcp-supervisor/src/cargo_executor.rs \
             crates/bevy-mcp-supervisor/src/development_status.rs \
             crates/bevy-mcp-supervisor/src/lib.rs \
+            crates/bevy-mcp-supervisor/src/process_manager.rs \
+            crates/bevy-mcp-supervisor/src/process_tools.rs \
             crates/bevy-mcp-supervisor/src/rebuild_restart.rs \
             crates/bevy-mcp-supervisor/src/stage4_acceptance.rs \
             crates/bevy-mcp-supervisor/src/supervisor_acceptance.rs \
