@@ -35,6 +35,7 @@ jobs:
         run: |
           python .github/bevy019_apply.py
           python .github/bevy019_supervisor_clippy.py
+          python .github/bevy019_pointer_optional.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -50,7 +51,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/bevy019_apply.py .github/bevy019_supervisor_clippy.py .github/workflows/bevy019-validation.yml
+          git rm .github/bevy019_apply.py .github/bevy019_supervisor_clippy.py .github/bevy019_pointer_optional.py .github/workflows/bevy019-validation.yml
           git add -- \
             crates/bevy-mcp-host/src/debugger.rs \
             crates/bevy-mcp-host/src/operations.rs \
