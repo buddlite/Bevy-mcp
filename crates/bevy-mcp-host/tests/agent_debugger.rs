@@ -57,13 +57,13 @@ fn watchpoint_triggers_on_rising_edge_and_disables_when_once() {
         &ingress,
         1,
         DebugRequest::WatchpointAdd {
-            spec: WatchpointSpec {
+            spec: Box::new(WatchpointSpec {
                 name: "frame-zero".into(),
                 condition: DebugCondition::FrameAtLeast { frame: 0 },
                 pause_on_trigger: false,
                 once: true,
                 evidence: no_screenshot_evidence(),
-            },
+            }),
         },
     );
     app.update();

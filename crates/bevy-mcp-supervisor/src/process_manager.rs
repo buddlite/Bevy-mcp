@@ -869,11 +869,7 @@ mod tests {
         };
 
         let mut crash_armed = false;
-        loop {
-            let envelope = match read_frame(&mut stream, DEFAULT_MAX_FRAME_SIZE) {
-                Ok(envelope) => envelope,
-                Err(_) => break,
-            };
+        while let Ok(envelope) = read_frame(&mut stream, DEFAULT_MAX_FRAME_SIZE) {
             match envelope.message {
                 WireMessage::Command(command) => {
                     if let McpCommand::HostProbe { probe_id } = command.command {

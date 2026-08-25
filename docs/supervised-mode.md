@@ -142,7 +142,7 @@ For a source-code change, the normal autonomous loop is:
 supervisor:rebuild_restart:<uuid>
 ```
 
-Poll it using `operation_status`. `operation_cancel` can cancel the active Cargo child immediately; lifecycle-stage cancellation is observed at safe boundaries so the supervisor does not intentionally leave a half-transitioned process tree.
+Poll it using `operation_status`. `operation_cancel` can cancel the active Cargo child immediately; lifecycle-stage cancellation is observed at safe boundaries so the supervisor does not intentionally leave a half-transitioned process tree. Supervisor operation history is bounded: the oldest terminal Cargo and `rebuild_restart` records may be evicted after sustained use, while active operations are never pruned.
 
 ## Conservative rebuild/restart semantics
 

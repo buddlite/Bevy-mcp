@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::permissions::SupervisorPermissions;
 
+const CARGO_OPERATION_HISTORY_LIMIT: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct CargoExecutorConfig {
     pub project_dir: PathBuf,
@@ -728,8 +730,7 @@ impl CargoExecutor {
         command
             .args(&prepared.args)
             .current_dir(
-                &self
-                    .project()
+                self.project()
                     .map(|project| project.workspace_root.clone())
                     .unwrap_or_else(|_| self.inner.config.project_dir.clone()),
             )
@@ -752,8 +753,10 @@ impl CargoExecutor {
                     started.elapsed(),
                     None,
                     output,
-                    code,
-                    format!("Failed to start Cargo: {error}"),
+                    CargoOperationFailure {
+                        code: code.to_string(),
+                        message: format!("Failed to start Cargo: {error}"),
+                    },
                 );
                 return;
             }
@@ -794,10 +797,11 @@ impl CargoExecutor {
                         started.elapsed(),
                         None,
                         output.clone(),
-                        prepared.kind.failure_code(),
-                        error,
+                        CargoOperationFailure {
+                            code: prepared.kind.failure_code().to_string(),
+                            message: error,
+                        },
                     );
-                    self.clear_active(&operation_id);
                     return;
                 }
             }
@@ -818,12 +822,14 @@ impl CargoExecutor {
                 started.elapsed(),
                 status,
                 output,
-                prepared.kind.timeout_code(),
-                format!(
-                    "Cargo {} exceeded the {:.1}s operation timeout",
-                    prepared.kind.command(),
-                    prepared.timeout.as_secs_f64()
-                ),
+                CargoOperationFailure {
+                    code: prepared.kind.timeout_code().to_string(),
+                    message: format!(
+                        "Cargo {} exceeded the {:.1}s operation timeout",
+                        prepared.kind.command(),
+                        prepared.timeout.as_secs_f64()
+                    ),
+                },
             );
         } else if self.cancel_requested(&operation_id) {
             self.finish_cancelled(&operation_id, &prepared, started.elapsed(), status, output);
@@ -836,8 +842,10 @@ impl CargoExecutor {
                 started.elapsed(),
                 status,
                 output,
-                prepared.kind.failure_code(),
-                format!("Cargo {} exited unsuccessfully", prepared.kind.command()),
+                CargoOperationFailure {
+                    code: prepared.kind.failure_code().to_string(),
+                    message: format!("Cargo {} exited unsuccessfully", prepared.kind.command()),
+                },
             );
         }
     }
@@ -906,10 +914,9 @@ impl CargoExecutor {
         duration: Duration,
         status: Option<ExitStatus>,
         output: Arc<Mutex<OutputAccumulator>>,
-        code: &'static str,
-        message: String,
+        failure: CargoOperationFailure,
     ) {
-        let timed_out = code == prepared.kind.timeout_code();
+        let timed_out = failure.code == prepared.kind.timeout_code();
         let result = output
             .lock()
             .unwrap()
@@ -922,10 +929,7 @@ impl CargoExecutor {
             };
             record.snapshot.finished_unix_ms = Some(now_ms());
             record.snapshot.result = Some(result);
-            record.snapshot.failure = Some(CargoOperationFailure {
-                code: code.to_string(),
-                message,
-            });
+            record.snapshot.failure = Some(failure);
         });
         self.clear_active(operation_id);
     }
@@ -970,10 +974,31 @@ impl CargoExecutor {
     }
 
     fn clear_active(&self, operation_id: &str) {
-        let mut active = self.inner.active_operation.lock().unwrap();
-        if active.as_deref() == Some(operation_id) {
-            *active = None;
+        {
+            let mut active = self.inner.active_operation.lock().unwrap();
+            if active.as_deref() == Some(operation_id) {
+                *active = None;
+            }
         }
+        let mut operations = self.inner.operations.lock().unwrap();
+        prune_cargo_history(&mut operations, CARGO_OPERATION_HISTORY_LIMIT);
+    }
+}
+
+fn prune_cargo_history(operations: &mut HashMap<String, CargoOperationRecord>, limit: usize) {
+    let limit = limit.max(1);
+    if operations.len() <= limit {
+        return;
+    }
+    let mut terminal: Vec<_> = operations
+        .iter()
+        .filter(|(_, record)| record.snapshot.state.is_terminal())
+        .map(|(id, record)| (id.clone(), record.snapshot.created_unix_ms))
+        .collect();
+    terminal.sort_by_key(|(_, created)| *created);
+    let remove_count = operations.len().saturating_sub(limit);
+    for (id, _) in terminal.into_iter().take(remove_count) {
+        operations.remove(&id);
     }
 }
 
@@ -1193,5 +1218,49 @@ mod tests {
         assert_eq!(output.error_count, 1);
         assert_eq!(output.diagnostics[0].code.as_deref(), Some("E0425"));
         assert_eq!(output.diagnostics[0].spans[0].line_start, 3);
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn record(id: &str, created: u128, state: CargoOperationState) -> CargoOperationRecord {
+        CargoOperationRecord {
+            snapshot: CargoOperationSnapshot {
+                operation_id: id.to_string(),
+                kind: CargoOperationKind::Check,
+                state,
+                created_unix_ms: created,
+                started_unix_ms: Some(created),
+                finished_unix_ms: state.is_terminal().then_some(created + 1),
+                invocation: CargoInvocation::new(None, None, None, None, None),
+                result: None,
+                failure: None,
+            },
+            cancel_requested: false,
+        }
+    }
+
+    #[test]
+    fn cargo_history_prunes_oldest_terminal_records_only() {
+        let mut operations = HashMap::from([
+            (
+                "old".to_string(),
+                record("old", 1, CargoOperationState::Succeeded),
+            ),
+            (
+                "new".to_string(),
+                record("new", 2, CargoOperationState::Failed),
+            ),
+            (
+                "active".to_string(),
+                record("active", 3, CargoOperationState::Running),
+            ),
+        ]);
+        prune_cargo_history(&mut operations, 2);
+        assert!(!operations.contains_key("old"));
+        assert!(operations.contains_key("new"));
+        assert!(operations.contains_key("active"));
     }
 }

@@ -341,7 +341,7 @@ pub fn enqueue_command(world: &mut World, request_id: u64, command: &McpCommand)
                 }
             };
             let steps = (*steps).clamp(1, 120);
-            Ok(queue(
+            queue(
                 world,
                 PendingInteraction {
                     request_id,
@@ -355,7 +355,8 @@ pub fn enqueue_command(world: &mut World, request_id: u64, command: &McpCommand)
                     },
                     phase: 0,
                 },
-            ))
+            );
+            Ok(())
         }
         McpCommand::PointerScroll {
             x,
@@ -669,8 +670,10 @@ mod tests {
     #[test]
     fn ui_center_converts_physical_layout_to_logical_pointer_coordinates() {
         let transform = bevy::ui::UiGlobalTransform::from_xy(240.0, 160.0);
-        let mut computed = bevy::ui::ComputedNode::default();
-        computed.inverse_scale_factor = 0.5;
+        let computed = bevy::ui::ComputedNode {
+            inverse_scale_factor: 0.5,
+            ..Default::default()
+        };
 
         assert_eq!(
             logical_ui_center(&transform, &computed),

@@ -30,6 +30,11 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - In supervised mode, build/test and OS process lifecycle authority live in the persistent supervisor rather than the Bevy host; embedded mode retains the existing game-local permission boundary and externally owned lifecycle.
 - The supervised `capabilities` response now merges the live Bevy-host contract with supervisor Cargo, process, and `rebuild_restart` availability instead of exposing the embedded build/lifecycle contract unchanged.
 
+- Repository CI now enforces rustfmt and Clippy in addition to cross-platform compile/test coverage.
+- Supervisor Cargo and rebuild/restart operation histories are bounded by evicting the oldest terminal records.
+- Onboarding and contributor documentation now distinguishes supervised and embedded execution modes consistently.
+- Stage-numbered supervisor acceptance tests were renamed to reflect their continuing cross-stage role.
+
 ### Current limitations
 
 - Embedded `build_check`, `build`, and `test` tools return `BUILD_NOT_AVAILABLE`; supervisor mode provides the trusted Cargo executor instead.

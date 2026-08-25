@@ -2,14 +2,25 @@ name: CI
 
 on:
   push:
+    branches: [v.01]
   pull_request:
+    branches: [v.01]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  rust:
+  rust-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install Bevy Linux dependencies
         run: |
           sudo apt-get update
@@ -18,16 +29,24 @@ jobs:
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
       - name: Check workspace
         run: cargo check --workspace --all-targets
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test workspace
         run: cargo test --workspace
 
   process-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
       - name: Check supervisor on Windows
         run: cargo check -p bevy-mcp-supervisor --all-targets
       - name: Test supervisor process lifecycle on Windows

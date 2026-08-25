@@ -1,14 +1,8 @@
 pub use bevy_mcp_core::queue::IngressEntry;
 
 /// Bevy Resource wrapper around the core ingress queue.
-#[derive(bevy::prelude::Resource, Clone)]
+#[derive(bevy::prelude::Resource, Clone, Default)]
 pub struct McpIngressQueue(bevy_mcp_core::queue::McpIngressQueue);
-
-impl Default for McpIngressQueue {
-    fn default() -> Self {
-        Self(bevy_mcp_core::queue::McpIngressQueue::default())
-    }
-}
 
 impl McpIngressQueue {
     pub fn from_core(inner: bevy_mcp_core::queue::McpIngressQueue) -> Self {
@@ -34,14 +28,8 @@ impl McpIngressQueue {
 }
 
 /// Bevy Resource wrapper around the core result queue.
-#[derive(bevy::prelude::Resource, Clone)]
+#[derive(bevy::prelude::Resource, Clone, Default)]
 pub struct McpResultQueue(bevy_mcp_core::queue::McpResultQueue);
-
-impl Default for McpResultQueue {
-    fn default() -> Self {
-        Self(bevy_mcp_core::queue::McpResultQueue::default())
-    }
-}
 
 impl McpResultQueue {
     pub fn from_core(inner: bevy_mcp_core::queue::McpResultQueue) -> Self {

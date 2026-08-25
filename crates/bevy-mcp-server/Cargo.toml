@@ -10,7 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "MCP server for the Bevy game engine — enables AI agents to inspect, mutate, and control running Bevy applications"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [lib]
 name = "bevy_mcp_server"

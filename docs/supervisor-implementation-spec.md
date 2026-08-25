@@ -1,6 +1,6 @@
 # Supervisor Architecture and Implementation Specification
 
-Status: design approved for staged implementation. This document defines the contract for the persistent `bevy-mcp` supervisor before Stage 1 code is written.
+Status: implemented architecture contract. Supervisor Stages 1–4 are merged; later agent-oriented diagnostics extend this design. Use `supervised-mode.md` and the live `capabilities` / `development_status` responses for current operational behavior.
 
 ## Purpose
 

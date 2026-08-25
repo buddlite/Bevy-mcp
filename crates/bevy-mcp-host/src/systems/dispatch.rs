@@ -380,7 +380,7 @@ pub fn ingress_system(world: &mut World) {
 pub fn deferred_apply_system(world: &mut World) {
     let pending = {
         let mut deferred = world.resource_mut::<DeferredMcpCommands>();
-        deferred.pending.drain(..).collect::<Vec<_>>()
+        std::mem::take(&mut deferred.pending)
     };
 
     'commands: for cmd in pending {

@@ -9,7 +9,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Core protocol types for bevy-mcp — shared between server and host"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [dependencies]
 serde = { workspace = true }

@@ -324,13 +324,13 @@ impl DebugBevyMcpServer {
         };
         self.state
             .call(DebugRequest::WatchpointAdd {
-                spec: WatchpointSpec {
+                spec: Box::new(WatchpointSpec {
                     name: params.name,
                     condition,
                     pause_on_trigger: params.pause_on_trigger.unwrap_or(false),
                     once: params.once.unwrap_or(true),
                     evidence: evidence_from_params(params.evidence),
-                },
+                }),
             })
             .await
     }

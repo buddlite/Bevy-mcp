@@ -9,7 +9,7 @@ pub mod rebuild_restart;
 #[cfg(test)]
 mod cargo_executor_acceptance;
 #[cfg(test)]
-mod stage4_acceptance;
+mod supervisor_acceptance;
 
 pub use backend::{
     HostState, ProcessObservation, SupervisorBackend, SupervisorSnapshot, SupervisorTransport,

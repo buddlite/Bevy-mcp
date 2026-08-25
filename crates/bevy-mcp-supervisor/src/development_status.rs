@@ -146,10 +146,9 @@ fn compose_status(
         &stderr_tail,
     );
     let generation = generation(&process, &cargo_operations, &rebuild_operations);
-    let latest_success = latest_success_unix_ms(&process, &cargo_operations, &rebuild_operations);
-    let current_failure = last_failure
-        .as_ref()
-        .filter(|failure| failure.occurred_unix_ms.unwrap_or_default() > latest_success);
+    let current_failure = last_failure.as_ref().filter(|failure| {
+        failure_is_current(failure, &process, &cargo_operations, &rebuild_operations)
+    });
     let state = classify_state(
         &process,
         cargo_available,
@@ -266,7 +265,12 @@ fn latest_failure(
     [cargo_failure, rebuild_failure, process_failure]
         .into_iter()
         .flatten()
-        .max_by_key(|failure| failure.occurred_unix_ms.unwrap_or_default())
+        .max_by_key(|failure| {
+            (
+                failure.occurred_unix_ms.unwrap_or_default(),
+                failure_source_priority(&failure.source),
+            )
+        })
 }
 
 fn failure_from_cargo(operation: &CargoOperationSnapshot) -> DevelopmentFailure {
@@ -341,36 +345,79 @@ fn failure_from_rebuild(
             .unwrap_or_else(|| "rebuild_restart failed".to_string()),
         occurred_unix_ms: operation.finished_unix_ms,
         diagnostics,
-        stdout_tail: process_evidence
-            .then(|| stdout_tail.to_vec())
-            .unwrap_or_default(),
-        stderr_tail: process_evidence
-            .then(|| stderr_tail.to_vec())
-            .unwrap_or_default(),
+        stdout_tail: if process_evidence {
+            stdout_tail.to_vec()
+        } else {
+            Vec::new()
+        },
+        stderr_tail: if process_evidence {
+            stderr_tail.to_vec()
+        } else {
+            Vec::new()
+        },
     }
 }
 
-fn latest_success_unix_ms(
+fn failure_source_priority(source: &str) -> u8 {
+    match source {
+        "rebuild_restart" => 2,
+        "cargo" => 1,
+        _ => 0,
+    }
+}
+
+fn failure_is_current(
+    failure: &DevelopmentFailure,
     process: &ProcessSnapshot,
     cargo: &[CargoOperationSnapshot],
     rebuild: &[RebuildRestartSnapshot],
-) -> u128 {
-    let cargo_success = cargo
-        .iter()
-        .filter(|operation| operation.state == CargoOperationState::Succeeded)
-        .filter_map(|operation| operation.finished_unix_ms)
-        .max()
-        .unwrap_or_default();
-    let rebuild_success = rebuild
+) -> bool {
+    let occurred = failure.occurred_unix_ms.unwrap_or_default();
+    let latest_rebuild_success = rebuild
         .iter()
         .filter(|operation| operation.state == RebuildRestartState::Succeeded)
         .filter_map(|operation| operation.finished_unix_ms)
         .max()
         .unwrap_or_default();
-    let ready_process = (process.state == ProcessState::Running && process.host == "ready")
-        .then_some(process.started_unix_ms.unwrap_or_default())
-        .unwrap_or_default();
-    cargo_success.max(rebuild_success).max(ready_process)
+
+    if failure.code.starts_with("TEST_") || failure.stage.as_deref() == Some("test") {
+        let latest_test_success = cargo
+            .iter()
+            .filter(|operation| {
+                operation.kind == CargoOperationKind::Test
+                    && operation.state == CargoOperationState::Succeeded
+            })
+            .filter_map(|operation| operation.finished_unix_ms)
+            .max()
+            .unwrap_or_default();
+        return occurred > latest_test_success;
+    }
+
+    if failure.code.starts_with("BUILD_")
+        || matches!(failure.stage.as_deref(), Some("check" | "build"))
+    {
+        let latest_compile_success = cargo
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.kind,
+                    CargoOperationKind::Check | CargoOperationKind::Build
+                ) && operation.state == CargoOperationState::Succeeded
+            })
+            .filter_map(|operation| operation.finished_unix_ms)
+            .max()
+            .unwrap_or_default()
+            .max(latest_rebuild_success);
+        return occurred > latest_compile_success;
+    }
+
+    let latest_ready_process = if process.state == ProcessState::Running && process.host == "ready"
+    {
+        process.started_unix_ms.unwrap_or_default()
+    } else {
+        0
+    };
+    occurred > latest_ready_process.max(latest_rebuild_success)
 }
 
 fn generation(
@@ -794,6 +841,47 @@ mod tests {
     }
 
     #[test]
+    fn successful_check_does_not_hide_unresolved_test_failure() {
+        let mut failed_test = failed_check();
+        failed_test.operation_id = "supervisor:test:1".to_string();
+        failed_test.kind = CargoOperationKind::Test;
+        failed_test.failure.as_mut().unwrap().code = "TEST_FAILED".to_string();
+        failed_test.failure.as_mut().unwrap().message =
+            "Cargo test exited unsuccessfully".to_string();
+
+        let mut successful_check = failed_check();
+        successful_check.operation_id = "supervisor:check:2".to_string();
+        successful_check.state = CargoOperationState::Succeeded;
+        successful_check.created_unix_ms = 230;
+        successful_check.started_unix_ms = Some(231);
+        successful_check.finished_unix_ms = Some(240);
+        successful_check.failure = None;
+        successful_check.result.as_mut().unwrap().success = true;
+        successful_check.result.as_mut().unwrap().error_count = 0;
+        successful_check
+            .result
+            .as_mut()
+            .unwrap()
+            .diagnostics
+            .clear();
+
+        let status = compose_status(
+            process(ProcessState::Running, "ready"),
+            true,
+            None,
+            false,
+            SupervisorPermissions::full(),
+            vec![failed_test, successful_check],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert_eq!(status.state, DevelopmentState::TestFailed);
+        assert_eq!(status.recovery.action, "fix_failing_tests");
+    }
+
+    #[test]
     fn active_rebuild_takes_precedence_over_old_failure() {
         let rebuild = RebuildRestartSnapshot {
             operation_id: "supervisor:rebuild_restart:2".to_string(),
@@ -847,8 +935,10 @@ mod tests {
             stream: "stderr".to_string(),
             text: "panic in startup".to_string(),
         }];
+        let mut crashed = process(ProcessState::Crashed, "waiting");
+        crashed.exited_unix_ms = Some(450);
         let status = compose_status(
-            process(ProcessState::Crashed, "waiting"),
+            crashed,
             true,
             None,
             false,

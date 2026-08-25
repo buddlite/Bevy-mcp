@@ -100,7 +100,6 @@ impl FrameChanges {
 
 #[derive(Debug, Clone, Copy)]
 struct TickSnapshot {
-    added: u32,
     changed: u32,
 }
 
@@ -412,7 +411,6 @@ pub fn track_world_changes(world: &mut World) {
             snapshot.components.insert(
                 *component_id,
                 TickSnapshot {
-                    added: ticks.added.get(),
                     changed: ticks.changed.get(),
                 },
             );
@@ -474,7 +472,6 @@ pub fn track_world_changes(world: &mut World) {
             continue;
         };
         let snapshot = TickSnapshot {
-            added: ticks.added.get(),
             changed: ticks.changed.get(),
         };
         current_resource_names.insert(component_id, name.clone());

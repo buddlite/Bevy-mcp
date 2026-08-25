@@ -11,6 +11,8 @@ use crate::cargo_executor::{
     CargoError, CargoExecutor, CargoInvocation, CargoOperationSnapshot, CargoOperationState,
 };
 use crate::permissions::SupervisorPermissions;
+const REBUILD_OPERATION_HISTORY_LIMIT: usize = 128;
+
 use crate::process_manager::{
     ProcessError, ProcessManager, ProcessOwnership, ProcessSnapshot, ProcessState,
 };
@@ -43,7 +45,7 @@ pub struct RebuildRestartFailure {
     pub details: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct RebuildRestartEvidence {
     pub initial_process: Option<ProcessSnapshot>,
     pub check: Option<CargoOperationSnapshot>,
@@ -51,19 +53,6 @@ pub struct RebuildRestartEvidence {
     pub build: Option<CargoOperationSnapshot>,
     pub executable: Option<String>,
     pub launched_process: Option<ProcessSnapshot>,
-}
-
-impl Default for RebuildRestartEvidence {
-    fn default() -> Self {
-        Self {
-            initial_process: None,
-            check: None,
-            stopped_process: None,
-            build: None,
-            executable: None,
-            launched_process: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -659,10 +648,31 @@ impl RebuildRestartCoordinator {
     }
 
     fn clear_active(&self, operation_id: &str) {
-        let mut active = self.inner.active_operation.lock().unwrap();
-        if active.as_deref() == Some(operation_id) {
-            *active = None;
+        {
+            let mut active = self.inner.active_operation.lock().unwrap();
+            if active.as_deref() == Some(operation_id) {
+                *active = None;
+            }
         }
+        let mut operations = self.inner.operations.lock().unwrap();
+        prune_rebuild_history(&mut operations, REBUILD_OPERATION_HISTORY_LIMIT);
+    }
+}
+
+fn prune_rebuild_history(operations: &mut HashMap<String, RebuildRestartRecord>, limit: usize) {
+    let limit = limit.max(1);
+    if operations.len() <= limit {
+        return;
+    }
+    let mut terminal: Vec<_> = operations
+        .iter()
+        .filter(|(_, record)| record.snapshot.state.is_terminal())
+        .map(|(id, record)| (id.clone(), record.snapshot.created_unix_ms))
+        .collect();
+    terminal.sort_by_key(|(_, created)| *created);
+    let remove_count = operations.len().saturating_sub(limit);
+    for (id, _) in terminal.into_iter().take(remove_count) {
+        operations.remove(&id);
     }
 }
 
@@ -691,4 +701,48 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn record(id: &str, created: u128, state: RebuildRestartState) -> RebuildRestartRecord {
+        RebuildRestartRecord {
+            snapshot: RebuildRestartSnapshot {
+                operation_id: id.to_string(),
+                state,
+                created_unix_ms: created,
+                started_unix_ms: Some(created),
+                finished_unix_ms: state.is_terminal().then_some(created + 1),
+                invocation: CargoInvocation::new(None, None, None, None, None),
+                evidence: RebuildRestartEvidence::default(),
+                failure: None,
+            },
+            cancel_requested: false,
+            current_cargo_operation_id: None,
+        }
+    }
+
+    #[test]
+    fn rebuild_history_prunes_oldest_terminal_records_only() {
+        let mut operations = HashMap::from([
+            (
+                "old".to_string(),
+                record("old", 1, RebuildRestartState::Succeeded),
+            ),
+            (
+                "new".to_string(),
+                record("new", 2, RebuildRestartState::Failed),
+            ),
+            (
+                "active".to_string(),
+                record("active", 3, RebuildRestartState::Building),
+            ),
+        ]);
+        prune_rebuild_history(&mut operations, 2);
+        assert!(!operations.contains_key("old"));
+        assert!(operations.contains_key("new"));
+        assert!(operations.contains_key("active"));
+    }
 }

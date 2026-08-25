@@ -4,6 +4,8 @@ Connect [Cline](https://github.com/cline/cline) (VS Code extension) to your live
 
 > This guide targets the current `v.01` development surface. Use `AgentBevyMcpServer` for the full base + advanced + debugger/playtest router; call `capabilities` to discover what is available and permitted at runtime.
 
+> **Mode note:** This guide documents **embedded mode**, where the MCP client launches the instrumented game binary directly. For autonomous Rust edit/build/restart workflows, use the persistent [supervised mode](../supervised-mode.md), which keeps the MCP session alive across game rebuilds and crashes.
+
 ---
 
 ## What You'll Need
