@@ -108,6 +108,7 @@ jobs:
             crates/bevy-mcp-host/src/change_tracking.rs \
             crates/bevy-mcp-host/src/debugger.rs \
             crates/bevy-mcp-host/src/systems/camera.rs \
+            crates/bevy-mcp-host/tests/agent_debugger.rs \
             crates/bevy-mcp-server/Cargo.toml \
             crates/bevy-mcp-server/src/debug_tools.rs \
             crates/bevy-mcp-supervisor/Cargo.toml \
