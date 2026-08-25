@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use bevy::camera::RenderTarget;
 use bevy::ecs::hierarchy::{ChildOf, Children};
-use bevy::ecs::schedule::{Schedule, Schedules};
+use bevy::ecs::schedule::{Schedule, Schedules, SystemKey};
 use bevy::prelude::*;
 use bevy::reflect::serde::ReflectSerializer;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -447,15 +448,13 @@ fn schedule_inspect(world: &World, requested: &str) -> McpResult {
         );
     };
     let systems = schedule_system_rows(schedule);
-    let conflicts: Vec<Value> = schedule
-        .graph()
-        .conflicting_systems()
-        .to_string(schedule.graph(), world.components())
+    let conflicts: Vec<Value> = schedule_conflicts(world, schedule)
+        .into_iter()
         .map(|(left, right, components)| {
             json!({
                 "left": left,
                 "right": right,
-                "components": components.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "components": components,
             })
         })
         .collect();
@@ -529,12 +528,6 @@ fn schedule_system_rows(schedule: &Schedule) -> Vec<Value> {
     match schedule.systems() {
         Ok(systems) => systems
             .map(|(key, system)| {
-                let run_condition_count = schedule
-                    .graph()
-                    .systems
-                    .get_conditions(key)
-                    .map(|conditions| conditions.len())
-                    .unwrap_or_default();
                 json!({
                     "name": system.name().to_string(),
                     "key": format!("{key:?}"),
@@ -542,7 +535,10 @@ fn schedule_system_rows(schedule: &Schedule) -> Vec<Value> {
                     "is_exclusive": system.is_exclusive(),
                     "has_deferred": system.has_deferred(),
                     "last_run_tick": system.get_last_run().get(),
-                    "run_condition_count": run_condition_count,
+                    // Bevy 0.19 moves run conditions out of ScheduleGraph when a schedule is built,
+                    // and does not expose them through Schedule::systems(). Do not report a false zero.
+                    "run_condition_count": Value::Null,
+                    "run_condition_count_available": false,
                 })
             })
             .collect(),
@@ -559,10 +555,57 @@ fn schedule_system_rows(schedule: &Schedule) -> Vec<Value> {
                     "has_deferred": system.has_deferred(),
                     "last_run_tick": system.get_last_run().get(),
                     "run_condition_count": conditions.len(),
+                    "run_condition_count_available": true,
                 })
             })
             .collect(),
     }
+}
+
+fn schedule_system_name_map(schedule: &Schedule) -> HashMap<SystemKey, String> {
+    let mut names = HashMap::new();
+    if let Ok(systems) = schedule.systems() {
+        names.extend(systems.map(|(key, system)| (key, system.name().to_string())));
+    }
+    // Newly-added systems live in ScheduleGraph until the next build. Combining both stores
+    // also makes this robust while a previously-built schedule is marked changed.
+    for (key, system, _) in schedule.graph().systems.iter() {
+        names
+            .entry(key)
+            .or_insert_with(|| system.name().to_string());
+    }
+    names
+}
+
+fn schedule_conflicts(world: &World, schedule: &Schedule) -> Vec<(String, String, Vec<String>)> {
+    let names = schedule_system_name_map(schedule);
+    schedule
+        .graph()
+        .conflicting_systems()
+        .0
+        .iter()
+        .map(|(left, right, components)| {
+            let left_name = names
+                .get(left)
+                .cloned()
+                .unwrap_or_else(|| format!("{left:?}"));
+            let right_name = names
+                .get(right)
+                .cloned()
+                .unwrap_or_else(|| format!("{right:?}"));
+            let component_names = components
+                .iter()
+                .map(|component| {
+                    world
+                        .components()
+                        .get_name(*component)
+                        .map(|name| name.to_string())
+                        .unwrap_or_else(|| format!("{component:?}"))
+                })
+                .collect();
+            (left_name, right_name, component_names)
+        })
+        .collect()
 }
 
 fn system_access(
@@ -660,10 +703,8 @@ fn conflict_rows_for_system(
     schedule: &Schedule,
     requested_system: &str,
 ) -> Vec<Value> {
-    schedule
-        .graph()
-        .conflicting_systems()
-        .to_string(schedule.graph(), world.components())
+    schedule_conflicts(world, schedule)
+        .into_iter()
         .filter_map(|(left, right, components)| {
             let left_matches = system_name_matches(&left, requested_system);
             let right_matches = system_name_matches(&right, requested_system);
@@ -672,7 +713,7 @@ fn conflict_rows_for_system(
             }
             Some(json!({
                 "other_system": if left_matches { right } else { left },
-                "components": components.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "components": components,
             }))
         })
         .collect()
@@ -741,15 +782,10 @@ fn writers_for(
             {
                 continue;
             }
-            for (left, right, components) in schedule
-                .graph()
-                .conflicting_systems()
-                .to_string(schedule.graph(), world.components())
-            {
+            for (left, right, components) in schedule_conflicts(world, schedule) {
                 let touches_target = components
                     .iter()
-                    .map(ToString::to_string)
-                    .any(|name| component_name_matches(&name, &canonical));
+                    .any(|name| component_name_matches(name, &canonical));
                 if !touches_target {
                     continue;
                 }

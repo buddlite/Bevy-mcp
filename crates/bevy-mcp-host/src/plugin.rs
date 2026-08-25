@@ -136,15 +136,15 @@ impl Plugin for BevyMcpPlugin {
         app.insert_resource(McpInstanceId::new(self.instance_id.clone()));
         let supervisor_shutdown = SupervisorShutdownSignal::default();
         app.insert_resource(supervisor_shutdown.clone());
-        if let Some(config) = self.supervisor_bridge.clone() {
-            if let Err(error) = spawn_supervisor_bridge(
+        if let Some(config) = self.supervisor_bridge.clone()
+            && let Err(error) = spawn_supervisor_bridge(
                 config,
                 ingress.inner().clone(),
                 results.inner().clone(),
                 supervisor_shutdown,
-            ) {
-                tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
-            }
+            )
+        {
+            tracing::error!(%error, "failed to start bevy-mcp supervisor bridge");
         }
         app.insert_resource(McpRegistry::new(&self.bevy_version));
         app.insert_resource(DeferredMcpCommands::default());

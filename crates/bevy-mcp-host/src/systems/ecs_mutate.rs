@@ -320,10 +320,7 @@ pub(crate) fn insert_component_by_reflect(
     let app_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = app_registry.read();
 
-    let registration = match registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == component)
-    {
+    let registration = match find_type_registration(&registry, component) {
         Some(r) => r,
         None => {
             return McpResult::error(
@@ -377,10 +374,7 @@ pub(crate) fn remove_component_by_reflect(
     let app_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = app_registry.read();
 
-    let registration = match registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == component)
-    {
+    let registration = match find_type_registration(&registry, component) {
         Some(r) => r,
         None => {
             return McpResult::error(
@@ -417,7 +411,7 @@ pub(crate) fn entity_reparent(
     use bevy::ecs::hierarchy::ChildOf;
 
     let entity = match resolve_entity(world, entity_handle) {
-        Some(e) => e,
+        Some(entity) => entity,
         None => {
             return McpResult::error(
                 "ENTITY_NOT_FOUND",
@@ -425,29 +419,59 @@ pub(crate) fn entity_reparent(
             );
         }
     };
-
-    if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
-        entity_ref.remove::<ChildOf>();
-    }
-
-    if let Some(parent_handle) = parent_handle {
-        let parent = match resolve_entity(world, parent_handle) {
-            Some(e) => e,
+    let parent = match parent_handle {
+        Some(parent_handle) => match resolve_entity(world, parent_handle) {
+            Some(parent) => Some(parent),
             None => {
                 return McpResult::error(
                     "ENTITY_NOT_FOUND",
                     format!("Parent entity {parent_handle} not found"),
                 );
             }
-        };
-        if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
-            entity_ref.insert(ChildOf(parent));
+        },
+        None => None,
+    };
+
+    if let Some(parent) = parent {
+        if parent == entity {
+            return McpResult::error("INVALID_HIERARCHY", "An entity cannot be its own parent");
         }
+        let mut cursor = Some(parent);
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = cursor {
+            if current == entity {
+                return McpResult::error(
+                    "INVALID_HIERARCHY",
+                    "Reparenting would create a hierarchy cycle",
+                );
+            }
+            if !visited.insert(current) {
+                return McpResult::error(
+                    "INVALID_HIERARCHY",
+                    "Existing parent chain contains a hierarchy cycle",
+                );
+            }
+            cursor = world.get::<ChildOf>(current).map(ChildOf::parent);
+        }
+        let Ok(mut entity_ref) = world.get_entity_mut(entity) else {
+            return McpResult::error(
+                "ENTITY_NOT_FOUND",
+                format!("Entity {entity_handle} not found"),
+            );
+        };
+        entity_ref.insert(ChildOf(parent));
         McpResult::success(json!({
             "reparented": entity_to_uri(world, entity),
             "new_parent": entity_to_uri(world, parent)
         }))
     } else {
+        let Ok(mut entity_ref) = world.get_entity_mut(entity) else {
+            return McpResult::error(
+                "ENTITY_NOT_FOUND",
+                format!("Entity {entity_handle} not found"),
+            );
+        };
+        entity_ref.remove::<ChildOf>();
         McpResult::success(
             json!({ "reparented": entity_to_uri(world, entity), "new_parent": null }),
         )
@@ -514,4 +538,85 @@ pub(crate) fn component_remove(
         "INTERNAL",
         "Component remove not yet wired to deferred queue",
     )
+}
+
+#[cfg(test)]
+mod bevy_019_hierarchy_tests {
+    use super::*;
+    use crate::instance::McpInstanceId;
+    use bevy::ecs::hierarchy::{ChildOf, Children};
+
+    fn handle(entity: Entity) -> bevy_mcp_core::entity_handle::EntityHandle {
+        bevy_mcp_core::entity_handle::EntityHandle::new(
+            "test",
+            "main",
+            entity.index().index() as u64,
+            entity.generation().to_bits() as u64,
+        )
+    }
+
+    #[test]
+    fn invalid_parent_preserves_existing_relationship() {
+        let mut world = World::new();
+        world.insert_resource(McpInstanceId::new("test"));
+        let old_parent = world.spawn_empty().id();
+        let child = world.spawn(ChildOf(old_parent)).id();
+        let missing = world.spawn_empty().id();
+        let missing_handle = handle(missing);
+        world.despawn(missing);
+        let result = entity_reparent(&mut world, &handle(child), Some(&missing_handle));
+        assert!(matches!(result, McpResult::Error { ref code, .. } if code == "ENTITY_NOT_FOUND"));
+        assert_eq!(
+            world.get::<ChildOf>(child).map(ChildOf::parent),
+            Some(old_parent)
+        );
+        assert!(
+            world
+                .get::<Children>(old_parent)
+                .is_some_and(|children| children.contains(&child))
+        );
+    }
+
+    #[test]
+    fn reparent_rejects_self_and_cycles() {
+        let mut world = World::new();
+        world.insert_resource(McpInstanceId::new("test"));
+        let root = world.spawn_empty().id();
+        let child = world.spawn(ChildOf(root)).id();
+        let self_result = entity_reparent(&mut world, &handle(root), Some(&handle(root)));
+        assert!(
+            matches!(self_result, McpResult::Error { ref code, .. } if code == "INVALID_HIERARCHY")
+        );
+        let cycle_result = entity_reparent(&mut world, &handle(root), Some(&handle(child)));
+        assert!(
+            matches!(cycle_result, McpResult::Error { ref code, .. } if code == "INVALID_HIERARCHY")
+        );
+        assert_eq!(world.get::<ChildOf>(child).map(ChildOf::parent), Some(root));
+        assert!(world.get::<ChildOf>(root).is_none());
+    }
+
+    #[test]
+    fn valid_reparent_uses_bevy_relationship_hooks() {
+        let mut world = World::new();
+        world.insert_resource(McpInstanceId::new("test"));
+        let old_parent = world.spawn_empty().id();
+        let new_parent = world.spawn_empty().id();
+        let child = world.spawn(ChildOf(old_parent)).id();
+        let result = entity_reparent(&mut world, &handle(child), Some(&handle(new_parent)));
+        assert!(matches!(result, McpResult::Success(_)));
+        assert_eq!(
+            world.get::<ChildOf>(child).map(ChildOf::parent),
+            Some(new_parent)
+        );
+        assert!(
+            world
+                .get::<Children>(new_parent)
+                .is_some_and(|children| children.contains(&child))
+        );
+        assert!(
+            world
+                .get::<Children>(old_parent)
+                .is_none_or(|children| !children.contains(&child))
+        );
+    }
 }

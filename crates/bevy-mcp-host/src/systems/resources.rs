@@ -26,10 +26,7 @@ pub(crate) fn resource_get(world: &World, resource: &str) -> McpResult {
     let app_registry = world.resource::<AppTypeRegistry>();
     let registry = app_registry.read();
 
-    let registration = match registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == resource)
-    {
+    let registration = match find_type_registration(&registry, resource) {
         Some(r) => r,
         None => {
             return McpResult::error(
@@ -81,10 +78,7 @@ pub(crate) fn resource_update(world: &mut World, resource: &str, value: &Value) 
     let app_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = app_registry.read();
 
-    let registration = match registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == resource)
-    {
+    let registration = match find_type_registration(&registry, resource) {
         Some(r) => r,
         None => {
             return McpResult::error(
@@ -151,10 +145,7 @@ pub(crate) fn resource_remove(world: &mut World, resource: &str) -> McpResult {
     let app_registry = world.resource::<AppTypeRegistry>().clone();
     let registry = app_registry.read();
 
-    let registration = match registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == resource)
-    {
+    let registration = match find_type_registration(&registry, resource) {
         Some(r) => r,
         None => {
             return McpResult::error(

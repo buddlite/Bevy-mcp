@@ -245,3 +245,113 @@ fn resource_writers_remain_resource_typed_when_instance_is_absent() {
             .any(|writer| { writer["system"].as_str() == Some("economy::write_dormant_stats") })
     );
 }
+
+#[derive(Resource, Default)]
+struct ConflictProbe;
+
+fn read_conflict_probe(_probe: Res<ConflictProbe>) {}
+fn write_conflict_probe(_probe: ResMut<ConflictProbe>) {}
+
+#[test]
+fn initialized_schedule_conflicts_use_executable_system_names_without_panicking() {
+    let ingress = McpIngressQueue::default();
+    let results = McpResultQueue::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(
+        BevyMcpPlugin::new()
+            .with_queues(ingress.clone(), results.clone())
+            .with_permissions(McpPermissions::read_only()),
+    );
+    app.init_resource::<ConflictProbe>();
+    app.add_systems(Update, (read_conflict_probe, write_conflict_probe));
+
+    // Build and run Update once. Bevy 0.19 moves initialized systems out of ScheduleGraph
+    // and into the executable schedule at this point.
+    app.update();
+
+    for (request_id, request) in [
+        (
+            80,
+            AdvancedRequest::ScheduleInspect {
+                schedule: "Update".into(),
+            },
+        ),
+        (
+            81,
+            AdvancedRequest::SystemAccess {
+                system: "read_conflict_probe".into(),
+                schedule: Some("Update".into()),
+            },
+        ),
+        (
+            82,
+            AdvancedRequest::ResourceWriters {
+                resource: "ConflictProbe".into(),
+                schedule: Some("Update".into()),
+            },
+        ),
+    ] {
+        let operation_id = encode_advanced_request(&request).unwrap();
+        ingress.push(
+            request_id,
+            McpCommand::OperationStatus {
+                operation_id: Some(operation_id),
+            },
+        );
+    }
+
+    app.update();
+    let responses = results.drain();
+
+    let schedule = responses
+        .iter()
+        .find(|response| response.request_id == 80)
+        .expect("schedule response");
+    let schedule = match &schedule.result {
+        McpResult::Success(value) => value,
+        McpResult::Error { code, message } => panic!("unexpected {code}: {message}"),
+    };
+    let conflicts = schedule["conflicts"].as_array().unwrap();
+    assert!(conflicts.iter().any(|conflict| {
+        let left = conflict["left"].as_str().unwrap_or_default();
+        let right = conflict["right"].as_str().unwrap_or_default();
+        (left.contains("read_conflict_probe") && right.contains("write_conflict_probe"))
+            || (left.contains("write_conflict_probe") && right.contains("read_conflict_probe"))
+    }));
+
+    let access = responses
+        .iter()
+        .find(|response| response.request_id == 81)
+        .expect("system access response");
+    let access = match &access.result {
+        McpResult::Success(value) => value,
+        McpResult::Error { code, message } => panic!("unexpected {code}: {message}"),
+    };
+    assert!(access["matches"].as_array().unwrap().iter().any(|entry| {
+        entry["conflicts"].as_array().is_some_and(|conflicts| {
+            conflicts.iter().any(|conflict| {
+                conflict["other_system"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("write_conflict_probe"))
+            })
+        })
+    }));
+
+    let writers = responses
+        .iter()
+        .find(|response| response.request_id == 82)
+        .expect("resource writers response");
+    let writers = match &writers.result {
+        McpResult::Success(value) => value,
+        McpResult::Error { code, message } => panic!("unexpected {code}: {message}"),
+    };
+    assert!(
+        writers["conflict_candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["system"]
+                .as_str()
+                .is_some_and(|name| name.contains("write_conflict_probe")))
+    );
+}

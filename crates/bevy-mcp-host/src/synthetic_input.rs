@@ -114,11 +114,7 @@ fn parse_gamepad_button(button: &str) -> Option<GamepadButton> {
     }
 }
 
-pub(crate) fn queue_key(
-    world: &mut World,
-    key: &str,
-    pressed: bool,
-) -> Result<(), String> {
+pub(crate) fn queue_key(world: &mut World, key: &str, pressed: bool) -> Result<(), String> {
     if parse_keycode(key).is_none() {
         return Err(format!("Unknown key '{key}'"));
     }
@@ -195,10 +191,9 @@ pub fn synthetic_input_apply_system(world: &mut World) {
         };
 
         if let Some(request_id) = pending.request_id {
-            world.resource::<McpResultQueue>().push(McpResponse {
-                request_id,
-                result,
-            });
+            world
+                .resource::<McpResultQueue>()
+                .push(McpResponse { request_id, result });
         }
     }
 }
@@ -230,8 +225,9 @@ fn apply_gamepad(world: &mut World, button: &str, pressed: bool) -> McpResult {
     };
     let Some(entity) = world
         .iter_entities()
-        .find(|entity| entity.contains::<Gamepad>())
+        .filter(|entity| entity.contains::<Gamepad>())
         .map(|entity| entity.id())
+        .min_by_key(|entity| entity.index().index())
     else {
         return McpResult::error(
             "GAMEPAD_NOT_AVAILABLE",
@@ -239,7 +235,10 @@ fn apply_gamepad(world: &mut World, button: &str, pressed: bool) -> McpResult {
         );
     };
     let Some(mut gamepad) = world.get_mut::<Gamepad>(entity) else {
-        return McpResult::error("GAMEPAD_NOT_AVAILABLE", "Gamepad disappeared before input apply");
+        return McpResult::error(
+            "GAMEPAD_NOT_AVAILABLE",
+            "Gamepad disappeared before input apply",
+        );
     };
     if pressed {
         gamepad.digital_mut().press(button_type);
@@ -254,9 +253,12 @@ fn apply_gamepad(world: &mut World, button: &str, pressed: bool) -> McpResult {
 }
 
 pub fn synthetic_pointer_button_system(
-    mut events: MessageReader<PointerInput>,
+    events: Option<MessageReader<PointerInput>>,
     input: Option<ResMut<ButtonInput<MouseButton>>>,
 ) {
+    let Some(mut events) = events else {
+        return;
+    };
     let Some(mut input) = input else {
         return;
     };
@@ -331,12 +333,34 @@ mod tests {
     }
 
     #[test]
+    fn pointer_bridge_is_safe_without_picking_plugin() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, InputPlugin));
+        app.add_systems(
+            PreUpdate,
+            synthetic_pointer_button_system.after(bevy::input::InputSystems),
+        );
+
+        app.update();
+
+        let input = app.world().resource::<ButtonInput<MouseButton>>();
+        assert!(!input.pressed(MouseButton::Left));
+        assert!(!input.just_pressed(MouseButton::Left));
+        assert!(!input.just_released(MouseButton::Left));
+    }
+
+    #[test]
     fn gamepad_uses_bevy_019_entity_state() {
         let mut world = World::new();
         world.init_resource::<McpSyntheticInputQueue>();
         let entity = world.spawn(Gamepad::default()).id();
         let result = apply_gamepad(&mut world, "south", true);
         assert!(matches!(result, McpResult::Success(_)));
-        assert!(world.get::<Gamepad>(entity).unwrap().just_pressed(GamepadButton::South));
+        assert!(
+            world
+                .get::<Gamepad>(entity)
+                .unwrap()
+                .just_pressed(GamepadButton::South)
+        );
     }
 }
