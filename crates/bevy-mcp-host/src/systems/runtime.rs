@@ -1,6 +1,9 @@
 use super::*;
 
 pub fn runtime_system(mut registry: ResMut<McpRegistry>, mut time: ResMut<Time<Virtual>>) {
+    // Keep Bevy's relative-speed state synchronized even while paused so the next
+    // stepped frame uses the scale currently reported by the MCP registry.
+    time.set_relative_speed_f64(registry.time_scale);
     if registry.paused {
         if registry.step_remaining > 0 {
             registry.step_remaining -= 1;
@@ -10,7 +13,6 @@ pub fn runtime_system(mut registry: ResMut<McpRegistry>, mut time: ResMut<Time<V
         }
     } else {
         time.unpause();
-        time.set_relative_speed(registry.time_scale as f32);
     }
 }
 
@@ -36,6 +38,12 @@ pub(crate) fn runtime_step(registry: &mut McpRegistry, frames: u32) -> McpResult
 }
 
 pub(crate) fn runtime_time_scale(registry: &mut McpRegistry, scale: f64) -> McpResult {
+    if !scale.is_finite() || scale < 0.0 {
+        return McpResult::error(
+            "INVALID_TIME_SCALE",
+            "time scale must be finite and greater than or equal to zero",
+        );
+    }
     registry.time_scale = scale;
     McpResult::success(json!({ "time_scale": scale }))
 }
@@ -189,5 +197,57 @@ pub(crate) fn operation_cancel(world: &World, operation_id: &str) -> McpResult {
         McpResult::success(json!({ "cancelled": operation_id }))
     } else {
         McpResult::error("NOT_FOUND", format!("Operation '{operation_id}' not found"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_time_scales_are_rejected_without_mutation() {
+        let mut registry = McpRegistry {
+            time_scale: 1.0,
+            ..Default::default()
+        };
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let result = runtime_time_scale(&mut registry, invalid);
+            assert!(
+                matches!(result, McpResult::Error { ref code, .. } if code == "INVALID_TIME_SCALE")
+            );
+            assert_eq!(registry.time_scale, 1.0);
+        }
+    }
+
+    #[test]
+    fn paused_step_uses_configured_time_scale() {
+        let mut app = App::new();
+        app.insert_resource(McpRegistry {
+            paused: true,
+            time_scale: 2.0,
+            step_remaining: 1,
+            ..Default::default()
+        });
+        app.insert_resource(Time::<Virtual>::default());
+        app.add_systems(Update, runtime_system);
+
+        app.update();
+        let time = app.world().resource::<Time<Virtual>>();
+        assert_eq!(time.relative_speed_f64(), 2.0);
+        assert!(!time.is_paused());
+        assert_eq!(app.world().resource::<McpRegistry>().step_remaining, 0);
+
+        app.update();
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    #[test]
+    fn finite_nonnegative_time_scales_are_valid() {
+        let mut registry = McpRegistry::default();
+        for valid in [0.0, 0.5, 1.0, 2.0, f64::MAX] {
+            let result = runtime_time_scale(&mut registry, valid);
+            assert!(matches!(result, McpResult::Success(_)));
+            assert_eq!(registry.time_scale, valid);
+        }
     }
 }

@@ -577,15 +577,15 @@ impl CargoExecutor {
         }
 
         let mut child = self.inner.child.lock().await;
-        if let Some(managed) = child.as_mut() {
-            if managed.operation_id == operation_id {
-                managed.child.start_kill().map_err(|error| {
-                    CargoError::new(
-                        "BUILD_CANCEL_FAILED",
-                        format!("Failed to terminate Cargo process tree: {error}"),
-                    )
-                })?;
-            }
+        if let Some(managed) = child.as_mut()
+            && managed.operation_id == operation_id
+        {
+            managed.child.start_kill().map_err(|error| {
+                CargoError::new(
+                    "BUILD_CANCEL_FAILED",
+                    format!("Failed to terminate Cargo process tree: {error}"),
+                )
+            })?;
         }
         drop(child);
         Ok(self
@@ -676,17 +676,17 @@ impl CargoExecutor {
             args.push("--features".to_string());
             args.push(invocation.features.join(","));
         }
-        if kind == CargoOperationKind::Test {
-            if let Some(filter) = invocation.filter.as_ref() {
-                if filter.starts_with('-') {
-                    return Err(CargoError::new(
-                        "INVALID_TEST_FILTER",
-                        "test filter must be a test-name filter, not a test-harness flag",
-                    ));
-                }
-                args.push("--".to_string());
-                args.push(filter.clone());
+        if kind == CargoOperationKind::Test
+            && let Some(filter) = invocation.filter.as_ref()
+        {
+            if filter.starts_with('-') {
+                return Err(CargoError::new(
+                    "INVALID_TEST_FILTER",
+                    "test filter must be a test-name filter, not a test-harness flag",
+                ));
             }
+            args.push("--".to_string());
+            args.push(filter.clone());
         }
         let timeout = match kind {
             CargoOperationKind::Check => self.inner.config.check_timeout,
@@ -852,13 +852,13 @@ impl CargoExecutor {
 
     async fn kill_active_child(&self, operation_id: &str) -> Result<(), String> {
         let mut child = self.inner.child.lock().await;
-        if let Some(managed) = child.as_mut() {
-            if managed.operation_id == operation_id {
-                managed
-                    .child
-                    .start_kill()
-                    .map_err(|error| format!("Failed to kill Cargo process tree: {error}"))?;
-            }
+        if let Some(managed) = child.as_mut()
+            && managed.operation_id == operation_id
+        {
+            managed
+                .child
+                .start_kill()
+                .map_err(|error| format!("Failed to kill Cargo process tree: {error}"))?;
         }
         Ok(())
     }

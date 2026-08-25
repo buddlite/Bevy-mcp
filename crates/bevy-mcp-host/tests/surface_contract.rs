@@ -97,7 +97,7 @@ fn full_permissions_expose_installed_raw_input_and_gamepad_command_works() {
     );
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(ButtonInput::<MouseButton>::default());
-    app.insert_resource(ButtonInput::<GamepadButton>::default());
+    let gamepad = app.world_mut().spawn(Gamepad::default()).id();
 
     ingress.push(2, McpCommand::Capabilities);
     app.update();
@@ -122,7 +122,8 @@ fn full_permissions_expose_installed_raw_input_and_gamepad_command_works() {
     assert_eq!(result["pressed"], true);
     assert!(
         app.world()
-            .resource::<ButtonInput<GamepadButton>>()
+            .get::<Gamepad>(gamepad)
+            .expect("mock gamepad should remain connected")
             .pressed(GamepadButton::South)
     );
 }

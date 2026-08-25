@@ -3,7 +3,9 @@ use bevy::prelude::*;
 /// MCP schedule sets that run at known boundaries.
 ///
 /// PreUpdate:
-///   McpIngress → McpValidate → McpApply
+///   McpIngress → McpValidate → McpApply (runtime/input coordination)
+///
+/// Reflected ECS/resource mutations are applied in `Update` after `PreUpdate` input settles.
 ///
 /// PostUpdate:
 ///   McpCapture → McpDiagnostics → McpEgress

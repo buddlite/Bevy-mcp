@@ -26,7 +26,9 @@ pub(crate) fn capabilities(world: &World) -> McpResult {
 
     let key_input_available = world.contains_resource::<ButtonInput<KeyCode>>();
     let mouse_button_available = world.contains_resource::<ButtonInput<MouseButton>>();
-    let gamepad_button_available = world.contains_resource::<ButtonInput<GamepadButton>>();
+    let gamepad_button_available = world
+        .iter_entities()
+        .any(|entity| entity.contains::<bevy::input::gamepad::Gamepad>());
     let pointer_available = crate::interaction::pointer_available(world);
     let camera_available = active_camera_entity(world).is_some();
     let camera_frame_available = active_camera_entity(world).is_some_and(|camera| {

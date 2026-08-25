@@ -736,8 +736,9 @@ fn advance_playtest(
                     complete_step(
                         session,
                         frame,
-                        json!({ "type": "key", "key": key, "pressed": pressed }),
+                        json!({ "type": "key", "key": key, "pressed": pressed, "queued_for_next_input_phase": true }),
                     );
+                    return;
                 }
                 Err(error) => {
                     fail_playtest(world, debugger, session, frame, "INPUT_FAILED", error);
@@ -1243,10 +1244,7 @@ fn reflected_component_json(
         .get_resource::<AppTypeRegistry>()
         .ok_or_else(|| "AppTypeRegistry is not available".to_string())?;
     let registry = app_registry.read();
-    let Some(registration) = registry.iter().find(|registration| {
-        let path = registration.type_info().type_path_table();
-        path.short_path() == requested || path.path() == requested
-    }) else {
+    let Some(registration) = crate::systems::find_type_registration(&registry, requested) else {
         return Ok(None);
     };
     let Some(reflect_component) = registration.data::<bevy::ecs::reflect::ReflectComponent>()
@@ -1266,12 +1264,7 @@ fn reflected_resource_json(world: &World, requested: &str) -> Result<Value, Stri
         .get_resource::<AppTypeRegistry>()
         .ok_or_else(|| "AppTypeRegistry is not available".to_string())?;
     let registry = app_registry.read();
-    let registration = registry
-        .iter()
-        .find(|registration| {
-            let path = registration.type_info().type_path_table();
-            path.short_path() == requested || path.path() == requested
-        })
+    let registration = crate::systems::find_type_registration(&registry, requested)
         .ok_or_else(|| format!("Resource '{requested}' is not registered"))?;
     let type_id = registration.type_id();
     let reflect_from_ptr = registration
@@ -1303,12 +1296,7 @@ fn resolve_component_ids(
     names
         .iter()
         .map(|name| {
-            registry
-                .iter()
-                .find(|registration| {
-                    let path = registration.type_info().type_path_table();
-                    path.short_path() == name || path.path() == name
-                })
+            crate::systems::find_type_registration(&registry, name)
                 .and_then(|registration| world.components().get_id(registration.type_id()))
                 .ok_or_else(|| format!("Component '{name}' is not registered"))
         })
@@ -1718,59 +1706,7 @@ fn current_frame(world: &World) -> u64 {
 }
 
 fn apply_key(world: &mut World, key: &str, pressed: bool) -> Result<(), String> {
-    let keycode = parse_keycode(key).ok_or_else(|| format!("Unknown key '{key}'"))?;
-    let mut input = world
-        .get_resource_mut::<ButtonInput<KeyCode>>()
-        .ok_or_else(|| "ButtonInput<KeyCode> is not available; add InputPlugin".to_string())?;
-    if pressed {
-        input.press(keycode);
-    } else {
-        input.release(keycode);
-    }
-    Ok(())
-}
-
-fn parse_keycode(key: &str) -> Option<KeyCode> {
-    match key.to_lowercase().as_str() {
-        "a" | "keya" => Some(KeyCode::KeyA),
-        "b" | "keyb" => Some(KeyCode::KeyB),
-        "c" | "keyc" => Some(KeyCode::KeyC),
-        "d" | "keyd" => Some(KeyCode::KeyD),
-        "e" | "keye" => Some(KeyCode::KeyE),
-        "f" | "keyf" => Some(KeyCode::KeyF),
-        "g" | "keyg" => Some(KeyCode::KeyG),
-        "h" | "keyh" => Some(KeyCode::KeyH),
-        "i" | "keyi" => Some(KeyCode::KeyI),
-        "j" | "keyj" => Some(KeyCode::KeyJ),
-        "k" | "keyk" => Some(KeyCode::KeyK),
-        "l" | "keyl" => Some(KeyCode::KeyL),
-        "m" | "keym" => Some(KeyCode::KeyM),
-        "n" | "keyn" => Some(KeyCode::KeyN),
-        "o" | "keyo" => Some(KeyCode::KeyO),
-        "p" | "keyp" => Some(KeyCode::KeyP),
-        "q" | "keyq" => Some(KeyCode::KeyQ),
-        "r" | "keyr" => Some(KeyCode::KeyR),
-        "s" | "keys" => Some(KeyCode::KeyS),
-        "t" | "keyt" => Some(KeyCode::KeyT),
-        "u" | "keyu" => Some(KeyCode::KeyU),
-        "v" | "keyv" => Some(KeyCode::KeyV),
-        "w" | "keyw" => Some(KeyCode::KeyW),
-        "x" | "keyx" => Some(KeyCode::KeyX),
-        "y" | "keyy" => Some(KeyCode::KeyY),
-        "z" | "keyz" => Some(KeyCode::KeyZ),
-        "space" => Some(KeyCode::Space),
-        "enter" => Some(KeyCode::Enter),
-        "escape" | "esc" => Some(KeyCode::Escape),
-        "tab" => Some(KeyCode::Tab),
-        "arrowup" | "up" => Some(KeyCode::ArrowUp),
-        "arrowdown" | "down" => Some(KeyCode::ArrowDown),
-        "arrowleft" | "left" => Some(KeyCode::ArrowLeft),
-        "arrowright" | "right" => Some(KeyCode::ArrowRight),
-        "shift" | "shiftleft" => Some(KeyCode::ShiftLeft),
-        "control" | "ctrl" | "controlleft" => Some(KeyCode::ControlLeft),
-        "alt" | "altleft" => Some(KeyCode::AltLeft),
-        _ => None,
-    }
+    crate::synthetic_input::queue_key(world, key, pressed)
 }
 
 fn push_result(world: &World, request_id: u64, result: McpResult) {

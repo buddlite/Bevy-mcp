@@ -327,13 +327,14 @@ impl ProcessManager {
         stream: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ProcessLogEntry>, ProcessError> {
-        if let Some(stream) = stream {
-            if stream != "stdout" && stream != "stderr" {
-                return Err(ProcessError::new(
-                    "INVALID_PROCESS_LOG_STREAM",
-                    "stream must be 'stdout', 'stderr', or omitted",
-                ));
-            }
+        if let Some(stream) = stream
+            && stream != "stdout"
+            && stream != "stderr"
+        {
+            return Err(ProcessError::new(
+                "INVALID_PROCESS_LOG_STREAM",
+                "stream must be 'stdout', 'stderr', or omitted",
+            ));
         }
         Ok(self
             .inner
@@ -964,10 +965,10 @@ mod tests {
             loop {
                 let logs = manager.logs(Some("stdout"), 100).unwrap();
                 for entry in logs {
-                    if let Some(value) = entry.text.strip_prefix("DESCENDANT_PORT=") {
-                        if let Ok(port) = value.parse() {
-                            return port;
-                        }
+                    if let Some(value) = entry.text.strip_prefix("DESCENDANT_PORT=")
+                        && let Ok(port) = value.parse()
+                    {
+                        return port;
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;

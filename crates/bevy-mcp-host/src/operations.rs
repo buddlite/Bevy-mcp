@@ -68,10 +68,10 @@ impl OperationTracker {
     pub fn cancel(&self, id: &str) -> bool {
         let mut ops = self.operations.lock().unwrap();
         if let Some(op) = ops.get_mut(id) {
-            if let Some(process) = &op.process {
-                if let Ok(mut proc) = process.lock() {
-                    let _ = proc.kill();
-                }
+            if let Some(process) = &op.process
+                && let Ok(mut proc) = process.lock()
+            {
+                let _ = proc.kill();
             }
             op.status = OperationStatus::Cancelled;
             true

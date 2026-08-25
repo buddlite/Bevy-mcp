@@ -102,30 +102,24 @@ pub(crate) fn template_save(
             .unwrap_or(&component_name)
             .to_string();
 
-        let registration = registry.iter().find(|r| {
-            let tp = r.type_info().type_path_table();
-            tp.short_path() == short_name || tp.path() == component_name
-        });
+        let registration = find_type_registration(&registry, &component_name)
+            .or_else(|| find_type_registration(&registry, &short_name));
 
-        if let Some(registration) = registration {
-            if let Some(reflect_component) =
+        if let Some(registration) = registration
+            && let Some(reflect_component) =
                 registration.data::<bevy::ecs::reflect::ReflectComponent>()
-            {
-                if let Some(reflected) = reflect_component.reflect(entity_ref) {
-                    let serializer = bevy::reflect::serde::ReflectSerializer::new(
-                        reflected.as_reflect(),
-                        &registry,
-                    );
-                    if let Ok(value) = serde_json::to_value(&serializer) {
-                        if let Some(obj) = value.as_object() {
-                            if let Some(inner) = obj.values().next() {
-                                components_json.insert(short_name, inner.clone());
-                                continue;
-                            }
-                        }
-                        components_json.insert(short_name, value);
-                    }
+            && let Some(reflected) = reflect_component.reflect(entity_ref)
+        {
+            let serializer =
+                bevy::reflect::serde::ReflectSerializer::new(reflected.as_reflect(), &registry);
+            if let Ok(value) = serde_json::to_value(&serializer) {
+                if let Some(obj) = value.as_object()
+                    && let Some(inner) = obj.values().next()
+                {
+                    components_json.insert(short_name, inner.clone());
+                    continue;
                 }
+                components_json.insert(short_name, value);
             }
         }
     }
@@ -149,13 +143,13 @@ pub(crate) fn template_save(
         }
     };
 
-    if let Some(parent) = std::path::Path::new(&file_path).parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return McpResult::error(
-                "IO_ERROR",
-                format!("Failed to create directory {}: {e}", parent.display()),
-            );
-        }
+    if let Some(parent) = std::path::Path::new(&file_path).parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return McpResult::error(
+            "IO_ERROR",
+            format!("Failed to create directory {}: {e}", parent.display()),
+        );
     }
     if let Err(e) = std::fs::write(&file_path, &json_string) {
         return McpResult::error("IO_ERROR", format!("Failed to write template file: {e}"));
@@ -232,10 +226,10 @@ pub(crate) fn template_load_apply(
         }
     }
 
-    if let Some((x, y, z)) = position {
-        if let Ok(mut entity_ref) = world.get_entity_mut(entity) {
-            entity_ref.insert(Transform::from_xyz(x, y, z));
-        }
+    if let Some((x, y, z)) = position
+        && let Ok(mut entity_ref) = world.get_entity_mut(entity)
+    {
+        entity_ref.insert(Transform::from_xyz(x, y, z));
     }
 
     if let Some(parent_handle) = parent {

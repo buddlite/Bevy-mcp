@@ -182,13 +182,13 @@ impl SupervisorBackend {
             .clone()
             .ok_or_else(|| GameCallError::new("GAME_UNAVAILABLE", "No game is connected"))?;
 
-        if let Some(required) = required_connection_id {
-            if active.connection_id != required {
-                return Err(GameCallError::new(
-                    "CONNECTION_REPLACED",
-                    "The game connection generation changed before the command was sent",
-                ));
-            }
+        if let Some(required) = required_connection_id
+            && active.connection_id != required
+        {
+            return Err(GameCallError::new(
+                "CONNECTION_REPLACED",
+                "The game connection generation changed before the command was sent",
+            ));
         }
 
         let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);

@@ -604,12 +604,10 @@ impl ServerHandler for SupervisorMcpServer {
         if matches!(
             request.name.as_ref(),
             "operation_status" | "operation_cancel"
-        ) {
-            if let Some(operation_id) = operation_id_from_request(&request) {
-                if !operation_id.starts_with("supervisor:") {
-                    return self.base.call_tool(request, context).await;
-                }
-            }
+        ) && let Some(operation_id) = operation_id_from_request(&request)
+            && !operation_id.starts_with("supervisor:")
+        {
+            return self.base.call_tool(request, context).await;
         }
         if self.supervisor.get_tool(request.name.as_ref()).is_some() {
             self.supervisor.call_tool(request, context).await

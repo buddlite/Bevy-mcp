@@ -17,6 +17,7 @@ pub mod queue;
 pub mod registry;
 pub mod schedule;
 pub mod supervisor_bridge;
+pub mod synthetic_input;
 pub mod systems;
 
 pub use agent_api::{

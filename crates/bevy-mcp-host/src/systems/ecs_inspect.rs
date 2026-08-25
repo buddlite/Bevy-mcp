@@ -198,12 +198,7 @@ pub(crate) fn entity_query(
     let app_registry = world.resource::<AppTypeRegistry>();
     let registry = app_registry.read();
     let component_id = |name: &str| {
-        registry
-            .iter()
-            .find(|registration| {
-                let path = registration.type_info().type_path_table();
-                path.short_path() == name || path.path() == name
-            })
+        find_type_registration(&registry, name)
             .and_then(|registration| world.components().get_id(registration.type_id()))
     };
 
@@ -310,9 +305,7 @@ pub(crate) fn component_get(
     let app_registry = world.resource::<AppTypeRegistry>();
     let registry = app_registry.read();
 
-    let registration = registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == component);
+    let registration = find_type_registration(&registry, component);
 
     let registration = match registration {
         Some(r) => r,
@@ -363,9 +356,7 @@ pub(crate) fn component_schema(world: &World, component: &str) -> McpResult {
     let app_registry = world.resource::<AppTypeRegistry>();
     let registry = app_registry.read();
 
-    let registration = registry
-        .iter()
-        .find(|r| r.type_info().type_path_table().short_path() == component);
+    let registration = find_type_registration(&registry, component);
 
     let registration = match registration {
         Some(r) => r,
