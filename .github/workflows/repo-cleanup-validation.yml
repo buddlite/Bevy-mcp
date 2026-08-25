@@ -1,0 +1,124 @@
+name: Repository Cleanup Validation
+
+on:
+  push:
+    branches:
+      - audit/repo-cleanup
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repo-cleanup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Bevy Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+      - name: Apply repository cleanup
+        run: python -X utf8 .github/repo_cleanup_apply.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply repository cleanup
+        run: python -X utf8 .github/repo_cleanup_apply.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Check supervisor on Windows
+        run: cargo check -p bevy-mcp-supervisor --all-targets
+      - name: Test supervisor on Windows
+        run: cargo test -p bevy-mcp-supervisor --lib
+
+  commit:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/repo-cleanup
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply validated cleanup
+        run: python -X utf8 .github/repo_cleanup_apply.py
+      - name: Format validated source
+        run: cargo fmt --all
+      - name: Remove temporary validation files
+        run: |
+          rm .github/repo_cleanup_apply.py
+          rm .github/workflows/repo-cleanup-validation.yml
+      - name: Commit validated cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            .gitignore \
+            Cargo.toml \
+            CHANGELOG.md \
+            CONTRIBUTING.md \
+            QUICKSTART.md \
+            README.md \
+            .github/workflows/ci.yml \
+            .github/repo_cleanup_apply.py \
+            .github/workflows/repo-cleanup-validation.yml \
+            config/README.md \
+            crates/bevy-mcp-core/Cargo.toml \
+            crates/bevy-mcp-host/Cargo.toml \
+            crates/bevy-mcp-server/Cargo.toml \
+            crates/bevy-mcp-supervisor/Cargo.toml \
+            examples/e2e/Cargo.toml \
+            crates/bevy-mcp-supervisor/src/cargo_executor.rs \
+            crates/bevy-mcp-supervisor/src/development_status.rs \
+            crates/bevy-mcp-supervisor/src/lib.rs \
+            crates/bevy-mcp-supervisor/src/rebuild_restart.rs \
+            crates/bevy-mcp-supervisor/src/stage4_acceptance.rs \
+            crates/bevy-mcp-supervisor/src/supervisor_acceptance.rs \
+            docs/README.md \
+            docs/supervisor-implementation-spec.md \
+            docs/guides/claude-code.md \
+            docs/guides/claude-desktop.md \
+            docs/guides/cline.md \
+            docs/guides/codex-cli.md \
+            docs/guides/cursor.md \
+            docs/guides/gemini-cli.md \
+            docs/guides/local-llms.md \
+            test_init.jsonl \
+            test_input.jsonl
+          if git diff --cached --quiet; then
+            echo "No cleanup changes to commit"
+            exit 1
+          fi
+          git commit -m "chore: audit and clean repository"
+          git push origin HEAD:audit/repo-cleanup
