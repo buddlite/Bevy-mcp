@@ -57,19 +57,35 @@ fn object_field<'a>(root: &'a mut Value, key: &str) -> &'a mut Map<String, Value
         .expect("field was normalized to object")
 }
 
+pub(crate) struct SupervisorCapabilityContext<'a> {
+    pub(crate) connected: bool,
+    pub(crate) ready: bool,
+    pub(crate) instance_id: Option<String>,
+    pub(crate) connection_id: Option<String>,
+    pub(crate) process: &'a ProcessSnapshot,
+    pub(crate) configured_launch_target: bool,
+    pub(crate) cargo_available: bool,
+    pub(crate) permissions: SupervisorPermissions,
+    pub(crate) cargo_error: Option<CargoError>,
+    pub(crate) host_error: Option<Value>,
+}
+
 pub(crate) fn merge_supervisor_capabilities(
     mut host: Value,
-    connected: bool,
-    ready: bool,
-    instance_id: Option<String>,
-    connection_id: Option<String>,
-    process: &ProcessSnapshot,
-    configured_launch_target: bool,
-    cargo_available: bool,
-    permissions: SupervisorPermissions,
-    cargo_error: Option<CargoError>,
-    host_error: Option<Value>,
+    context: SupervisorCapabilityContext<'_>,
 ) -> Value {
+    let SupervisorCapabilityContext {
+        connected,
+        ready,
+        instance_id,
+        connection_id,
+        process,
+        configured_launch_target,
+        cargo_available,
+        permissions,
+        cargo_error,
+        host_error,
+    } = context;
     if !host.is_object() {
         host = json!({});
     }
@@ -325,16 +341,18 @@ impl SupervisorToolServer {
         let process = self.manager.status().await;
         merge_supervisor_capabilities(
             host,
-            backend_status.connected,
-            backend_status.ready,
-            backend_status.instance_id,
-            backend_status.connection_id,
-            &process,
-            self.manager.has_configured_launch_target(),
-            self.cargo.available(),
-            self.permissions,
-            self.cargo.initialization_error(),
-            host_error,
+            SupervisorCapabilityContext {
+                connected: backend_status.connected,
+                ready: backend_status.ready,
+                instance_id: backend_status.instance_id,
+                connection_id: backend_status.connection_id,
+                process: &process,
+                configured_launch_target: self.manager.has_configured_launch_target(),
+                cargo_available: self.cargo.available(),
+                permissions: self.permissions,
+                cargo_error: self.cargo.initialization_error(),
+                host_error,
+            },
         )
         .to_string()
     }

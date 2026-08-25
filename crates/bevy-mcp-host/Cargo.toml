@@ -9,7 +9,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Bevy plugin for bevy-mcp — bridges MCP control plane and ECS"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [dependencies]
 bevy = { version = "0.19", features = ["debug"] }

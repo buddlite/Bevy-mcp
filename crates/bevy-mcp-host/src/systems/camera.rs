@@ -126,10 +126,7 @@ impl AggregateBounds {
     }
 }
 
-pub(crate) fn aggregate_world_bounds(
-    world: &World,
-    root: Entity,
-) -> Result<AggregateBounds, McpResult> {
+fn aggregate_world_bounds(world: &World, root: Entity) -> Result<AggregateBounds, McpResult> {
     use bevy::camera::primitives::Aabb;
 
     let mut stack = vec![root];

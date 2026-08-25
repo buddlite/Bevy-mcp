@@ -129,6 +129,8 @@ The front page intentionally distinguishes registered tools from capabilities th
 
 ## Quick Start
 
+> **For autonomous coding, start with the [Quick Start guide](QUICKSTART.md) and supervised mode.** The inline example below intentionally shows the simpler embedded mode.
+
 ### 1. Add matching dependencies
 
 For a source checkout/workspace integration:
@@ -224,6 +226,10 @@ See **[Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md)*
 
 ## How it works
 
+Both execution modes share the same Bevy host and tool model. The sequence below describes embedded mode; supervised mode moves MCP stdio, Cargo execution, and process lifecycle into the persistent `bevy-mcp` process while the game connects through the authenticated bridge.
+
+### Embedded mode
+
 1. **Your game embeds `BevyMcpPlugin`.** The host plugin runs inside the Bevy process and owns ECS-facing inspection, mutation, input, debugging, and runtime integration.
 2. **`AgentBevyMcpServer` exposes MCP over stdio.** The external AI/coding agent communicates using normal MCP JSON-RPC.
 3. **Server requests cross an in-process queue boundary.** The MCP server and Bevy host share request/result queues; no engine-side socket bridge is required.
@@ -234,6 +240,8 @@ See **[Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md)*
 ---
 
 ## Architecture
+
+### Embedded mode
 
 ```text
 ┌──────────────────────────────────────────────────────┐
@@ -257,6 +265,19 @@ See **[Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md)*
 ┌──────────────────────────────────────────────────────┐
 │                    Bevy ECS World                    │
 └──────────────────────────────────────────────────────┘
+```
+
+### Supervised mode
+
+```text
+MCP Client / AI Agent
+        | stdio / MCP
+        v
+persistent bevy-mcp supervisor
+   | Cargo + process lifecycle
+   | authenticated bridge
+   v
+BevyMcpPlugin -> Bevy ECS World
 ```
 
 The workspace is split into four crates:
@@ -308,7 +329,7 @@ See the [agent adapter checklist](docs/agent-adapter.md) for one minimal example
 
 ## Agent setup guides
 
-bevy-mcp uses standard MCP stdio transport, so any compatible client can launch the instrumented game binary. Repository guides are available for common clients:
+bevy-mcp uses standard MCP stdio transport. For autonomous coding, the client should launch the persistent `bevy-mcp` supervisor; the current client-specific guides document the alternative embedded mode where the client launches the instrumented game binary directly:
 
 | Agent | Guide |
 |---|---|
@@ -326,7 +347,7 @@ bevy-mcp uses standard MCP stdio transport, so any compatible client can launch 
 
 ### Is bevy-mcp an external editor bridge?
 
-No. The MCP client is external, but the Bevy-facing host runs inside the game process. The stdio server forwards requests to the host through shared in-process queues.
+No. The Bevy-facing host always runs inside the game process. In embedded mode the stdio MCP server shares that process; in supervised mode a persistent external `bevy-mcp` process owns MCP stdio and forwards game commands across the authenticated supervisor bridge.
 
 ### Does every tool work in every game?
 
@@ -342,7 +363,7 @@ Yes. The software pointer, native picking pipeline, UI interaction tools, keyboa
 
 ### Can bevy-mcp run Cargo builds and tests for the agent?
 
-Not from the embedded MCP server today. The build/check/test tools intentionally return `BUILD_NOT_AVAILABLE`; run those commands from a trusted development shell or coding harness.
+Yes in supervised mode: the persistent supervisor owns trusted `build_check`, `build`, `test`, and `rebuild_restart` operations. Embedded mode deliberately keeps Cargo and OS process lifecycle external and reports `BUILD_NOT_AVAILABLE` for those build tools.
 
 ### Is checkpoint/replay a full snapshot of the entire Bevy world?
 

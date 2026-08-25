@@ -4,6 +4,8 @@ Run bevy-mcp with a local model — no API key, no cloud costs, fully offline.
 
 > This guide targets the current `v.01` development surface. Follow the root Quick Start for matching source dependencies and `AgentBevyMcpServer` integration before configuring a local-model client.
 
+> **Mode note:** This guide documents **embedded mode**, where the MCP client launches the instrumented game binary directly. For autonomous Rust edit/build/restart workflows, use the persistent [supervised mode](../supervised-mode.md), which keeps the MCP session alive across game rebuilds and crashes.
+
 ---
 
 ## Why Use Local Models?

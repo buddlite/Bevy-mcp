@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::process_tools::merge_supervisor_capabilities;
+use crate::process_tools::{SupervisorCapabilityContext, merge_supervisor_capabilities};
 use crate::{
     CargoExecutor, CargoExecutorConfig, CargoInvocation, CargoOperationSnapshot,
     CargoOperationState, DevelopmentState, DevelopmentStatus, ProcessManager, ProcessManagerConfig,
@@ -31,7 +31,7 @@ fn main() {
         &WireEnvelope::new(WireMessage::Hello(Hello {
             token,
             instance_id: instance_id.clone(),
-            host_version: "stage4-fixture-v1".into(),
+            host_version: "supervisor-fixture-v1".into(),
             bevy_version: None,
             pid: Some(std::process::id()),
         })),
@@ -105,7 +105,7 @@ fn main() {
         &WireEnvelope::new(WireMessage::Hello(Hello {
             token,
             instance_id: instance_id.clone(),
-            host_version: "stage4-fixture-v2".into(),
+            host_version: "supervisor-fixture-v2".into(),
             bevy_version: None,
             pid: Some(std::process::id()),
         })),
@@ -163,7 +163,7 @@ fn main() {
 
 const STARTUP_FAILURE_SOURCE: &str = r#"
 fn main() {
-    eprintln!("stage4 startup failure marker");
+    eprintln!("supervisor startup failure marker");
     std::process::exit(42);
 }
 "#;
@@ -175,7 +175,7 @@ struct TempProject {
 impl TempProject {
     fn new(source: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "bevy-mcp-stage4-{}-{}",
+            "bevy-mcp-supervisor-{}-{}",
             std::process::id(),
             Uuid::new_v4()
         ));
@@ -190,7 +190,7 @@ impl TempProject {
             root.join("Cargo.toml"),
             format!(
                 r#"[package]
-name = "stage4_fixture"
+name = "supervisor_fixture"
 version = "0.1.0"
 edition = "2024"
 
@@ -283,9 +283,9 @@ async fn wait_rebuild(
 }
 
 async fn manager() -> (SupervisorTransport, ProcessManager) {
-    let token = format!("stage4-secret-{}", Uuid::new_v4());
+    let token = format!("supervisor-secret-{}", Uuid::new_v4());
     let transport = SupervisorTransport::bind(
-        format!("stage4-bootstrap-{}", Uuid::new_v4()),
+        format!("supervisor-bootstrap-{}", Uuid::new_v4()),
         token.clone(),
     )
     .await
@@ -443,7 +443,7 @@ async fn replacement_startup_failure_returns_exit_and_stderr_evidence() {
         failure
             .details
             .to_string()
-            .contains("stage4 startup failure marker")
+            .contains("supervisor startup failure marker")
     );
 
     let development = DevelopmentStatus::collect(
@@ -461,7 +461,7 @@ async fn replacement_startup_failure_returns_exit_and_stderr_evidence() {
         startup_failure
             .stderr_tail
             .iter()
-            .any(|entry| entry.text.contains("stage4 startup failure marker"))
+            .any(|entry| entry.text.contains("supervisor startup failure marker"))
     );
     assert_eq!(
         development.recovery.tool.as_deref(),
@@ -489,7 +489,7 @@ fn merged_capabilities_replace_embedded_build_and_lifecycle_contract() {
         state: ProcessState::Stopped,
         ownership: ProcessOwnership::None,
         pid: None,
-        instance_id: Some("run-stage4".into()),
+        instance_id: Some("run-supervisor".into()),
         connection_id: None,
         transport: "disconnected".into(),
         host: "waiting".into(),
@@ -501,16 +501,18 @@ fn merged_capabilities_replace_embedded_build_and_lifecycle_contract() {
     };
     let merged = merge_supervisor_capabilities(
         host,
-        false,
-        false,
-        Some("run-stage4".into()),
-        None,
-        &process,
-        false,
-        true,
-        SupervisorPermissions::full(),
-        None,
-        None,
+        SupervisorCapabilityContext {
+            connected: false,
+            ready: false,
+            instance_id: Some("run-supervisor".into()),
+            connection_id: None,
+            process: &process,
+            configured_launch_target: false,
+            cargo_available: true,
+            permissions: SupervisorPermissions::full(),
+            cargo_error: None,
+            host_error: None,
+        },
     );
 
     assert_eq!(merged["mode"], "supervised");

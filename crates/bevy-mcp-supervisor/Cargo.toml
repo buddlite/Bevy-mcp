@@ -9,7 +9,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Persistent supervisor control plane for bevy-mcp"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [lib]
 name = "bevy_mcp_supervisor"

@@ -139,23 +139,26 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
 
     match request {
         DebugRequest::WatchpointAdd { spec } => {
-            let mut debugger = world.resource_mut::<McpDebugger>();
-            let id = debugger.allocate_id("watch");
-            debugger.watchpoints.insert(
-                id.clone(),
-                WatchpointRuntime {
-                    id: id.clone(),
-                    spec: spec.clone(),
-                    enabled: true,
-                    trigger_count: 0,
-                    was_matched: false,
-                    last_trigger_frame: None,
-                    last_evaluation: None,
-                    last_error: None,
-                    evidence: None,
-                },
-            );
-            drop(debugger);
+            let spec = *spec;
+            let id = {
+                let mut debugger = world.resource_mut::<McpDebugger>();
+                let id = debugger.allocate_id("watch");
+                debugger.watchpoints.insert(
+                    id.clone(),
+                    WatchpointRuntime {
+                        id: id.clone(),
+                        spec: spec.clone(),
+                        enabled: true,
+                        trigger_count: 0,
+                        was_matched: false,
+                        last_trigger_frame: None,
+                        last_evaluation: None,
+                        last_error: None,
+                        evidence: None,
+                    },
+                );
+                id
+            };
             register_condition_tracking_interests(world, &spec.condition);
             push_result(
                 world,
@@ -168,7 +171,7 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
             let mut rows: Vec<Value> = debugger
                 .watchpoints
                 .values()
-                .map(|watchpoint| watchpoint_json(watchpoint, &debugger))
+                .map(|watchpoint| watchpoint_json(watchpoint, debugger))
                 .collect();
             rows.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
             push_result(
@@ -214,7 +217,7 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
                 Some(session) => push_result(
                     world,
                     request_id,
-                    McpResult::success(playtest_json(session, &debugger)),
+                    McpResult::success(playtest_json(session, debugger)),
                 ),
                 None => push_error(
                     world,
@@ -229,7 +232,7 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
             let mut rows: Vec<Value> = debugger
                 .playtests
                 .values()
-                .map(|session| playtest_json(session, &debugger))
+                .map(|session| playtest_json(session, debugger))
                 .collect();
             rows.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
             push_result(
@@ -272,15 +275,17 @@ fn handle_debug_request(world: &mut World, request_id: u64, request: DebugReques
             });
             match captured {
                 Ok(values) => {
-                    let mut store = world.resource_mut::<McpCheckpointStore>();
-                    let id = store.next_id();
-                    store.insert(StoredCheckpoint {
-                        id: id.clone(),
-                        name: name.clone(),
-                        frame,
-                        values,
-                    });
-                    drop(store);
+                    let id = {
+                        let mut store = world.resource_mut::<McpCheckpointStore>();
+                        let id = store.next_id();
+                        store.insert(StoredCheckpoint {
+                            id: id.clone(),
+                            name: name.clone(),
+                            frame,
+                            values,
+                        });
+                        id
+                    };
                     let coverage = world.resource::<McpCheckpointRegistry>().coverage();
                     push_result(
                         world,
@@ -469,14 +474,13 @@ fn debug_request_allowed(request: &DebugRequest, permissions: &McpPermissions) -
 
 fn start_playtest(world: &mut World, request_id: u64, plan: DebugPlaytestPlan) {
     let frame = current_frame(world);
-    let mut debugger = world.resource_mut::<McpDebugger>();
-    if let Some(active) = debugger
+    let active_id = world
+        .resource::<McpDebugger>()
         .playtests
         .values()
         .find(|session| session.status == PlaytestStatus::Running)
-    {
-        let active_id = active.id.clone();
-        drop(debugger);
+        .map(|session| session.id.clone());
+    if let Some(active_id) = active_id {
         push_error(
             world,
             request_id,
@@ -486,25 +490,28 @@ fn start_playtest(world: &mut World, request_id: u64, plan: DebugPlaytestPlan) {
         return;
     }
 
-    let id = debugger.allocate_id("playtest");
     let step_count = plan.steps.len();
-    debugger.playtests.insert(
-        id.clone(),
-        PlaytestRuntime {
-            id: id.clone(),
-            plan: plan.clone(),
-            status: PlaytestStatus::Running,
-            step_index: 0,
-            step_started_frame: None,
-            started_frame: frame,
-            finished_frame: None,
-            step_results: Vec::new(),
-            failure: None,
-            evidence: None,
-            captures: Vec::new(),
-        },
-    );
-    drop(debugger);
+    let id = {
+        let mut debugger = world.resource_mut::<McpDebugger>();
+        let id = debugger.allocate_id("playtest");
+        debugger.playtests.insert(
+            id.clone(),
+            PlaytestRuntime {
+                id: id.clone(),
+                plan: plan.clone(),
+                status: PlaytestStatus::Running,
+                step_index: 0,
+                step_started_frame: None,
+                started_frame: frame,
+                finished_frame: None,
+                step_results: Vec::new(),
+                failure: None,
+                evidence: None,
+                captures: Vec::new(),
+            },
+        );
+        id
+    };
 
     for step in &plan.steps {
         match step {

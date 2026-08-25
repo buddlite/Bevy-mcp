@@ -1,14 +1,29 @@
 # bevy-mcp Documentation
 
-Setup guides, API reference, and workflows for using bevy-mcp with AI agents.
+Setup guides, architecture notes, and agent workflows for bevy-mcp.
 
-> `v.01` is the active development branch and may be ahead of published crates. Follow the root Quick Start for matching dependency instructions.
+> `v.01` is the active unreleased development branch and may be ahead of published crates. Use matching source revisions for the tool surface documented here.
 
----
+## Execution modes
 
-## Agent Setup Guides
+### Supervised mode — recommended for autonomous development
 
-Step-by-step instructions for connecting bevy-mcp to your preferred AI agent. Each guide is self-contained — pick the one you use and follow it.
+A persistent `bevy-mcp` process owns the MCP session, Cargo operations, managed game lifecycle, restart identity, and startup/crash evidence. The Bevy game contains `BevyMcpPlugin` plus the supervisor bridge and may be rebuilt/replaced without disconnecting the coding agent.
+
+Start here:
+
+- [Quick Start](../QUICKSTART.md)
+- [Supervised mode and autonomous rebuild/restart](supervised-mode.md)
+- `development_status` for the compact current diagnosis
+- `capabilities` for the complete live contract
+
+### Embedded mode — supported for runtime-only workflows
+
+The MCP stdio server runs alongside the Bevy host in the instrumented game process. This is useful when the client only needs to inspect/control a running game and process replacement is handled externally.
+
+The client guides below currently document embedded mode and link back to supervised mode when rebuild/restart continuity is required.
+
+## Embedded client setup guides
 
 | Agent | Type | Config File |
 |---|---|---|
@@ -20,42 +35,17 @@ Step-by-step instructions for connecting bevy-mcp to your preferred AI agent. Ea
 | [Cline](guides/cline.md) | VS Code extension | `.cline/mcp.json` |
 | [Local LLMs (Ollama / LM Studio)](guides/local-llms.md) | Local | Varies |
 
----
+## Architecture and agent workflows
 
-## What You Need (All Agents)
+- [Supervisor implementation specification](supervisor-implementation-spec.md) — architecture contract behind the persistent control plane
+- [Tool capabilities](tool-capabilities.md) — capability-oriented tool reference
+- [Agent adapter checklist](agent-adapter.md) — semantic actions, typed state, checkpoint resources, and system-access metadata
+- [Agent interaction](agent-interaction.md) — native pointer/UI/camera interaction
+- [Agent debugger](agent-debugger.md) — runtime debugging surfaces
+- [Debugging intelligence](debugging-intelligence.md) — causal/change-tracking workflows
 
-1. **A Bevy project** with `bevy-mcp-host` added as a dependency
-2. **The `BevyMcpPlugin`** registered in your app
-3. **Your game binary compiled** — the binary *is* the MCP server
-4. **An MCP-compatible agent** configured to launch your binary
+## Repository links
 
-If you haven't set up the Rust side yet, see the [Quick Start](../README.md#quick-start) in the main README.
-
----
-
-## How It Works
-
-```
-Your MCP Client (Claude, Cursor, Codex, etc.)
-       │
-       │  launches your game binary as a subprocess
-       │  communicates over stdio (JSON-RPC)
-       │
-       ▼
-Your Game Binary
-├── bevy-mcp-server  (handles MCP protocol)
-├── bevy-mcp-host    (Bevy plugin — ECS bridge)
-└── Your Game Logic
-```
-
-There is no separate server process. The MCP server is embedded in your game binary. The agent launches the binary and talks to it over stdin/stdout.
-
----
-
-## Quick Links
-
-- [Supervisor implementation specification](supervisor-implementation-spec.md) — approved staged design for persistent MCP, process lifecycle, Cargo execution, restart identity, and liveness semantics
-- [Agent adapter checklist](agent-adapter.md) — register semantic actions, typed state, checkpoint resources, and exact system-access metadata
-- [Main README](../README.md) — Overview, tools list, architecture
-- [Quick Start](../QUICKSTART.md) — Minimal setup
-- [Contributing](../CONTRIBUTING.md) — Development setup and guidelines
+- [Main README](../README.md) — overview and capability summary
+- [Quick Start](../QUICKSTART.md) — recommended supervised setup plus embedded alternative
+- [Contributing](../CONTRIBUTING.md) — development setup and quality gates

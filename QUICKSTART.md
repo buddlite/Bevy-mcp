@@ -1,98 +1,97 @@
 # Quick Start
 
-Get the current `v.01` development build of bevy-mcp running inside a Bevy 0.19 game.
+Get the current `v.01` development build of bevy-mcp connected to a Bevy 0.19 game.
 
-> `v.01` is the active development branch and may be ahead of crates.io. Use matching source or git dependencies when you want the capabilities documented in this repository.
+> `v.01` is an unreleased development branch and may be ahead of crates.io. Keep the bevy-mcp crates/binary on one matching source revision.
 
-## 1. Add matching dependencies
+## Choose an execution mode
 
-For a checkout next to your game, use path dependencies:
+- **Supervised mode — recommended for autonomous coding.** The MCP client talks to a persistent `bevy-mcp` process while the game can be checked, rebuilt, restarted, and reconnected underneath it.
+- **Embedded mode — simplest for runtime-only inspection/control.** The instrumented game binary is itself the MCP stdio server.
+
+## Supervised mode
+
+### 1. Instrument the game
+
+For a checkout next to your game:
 
 ```toml
 [dependencies]
 bevy = "0.19"
-bevy-mcp-core = { path = "../Bevy-mcp/crates/bevy-mcp-core" }
 bevy-mcp-host = { path = "../Bevy-mcp/crates/bevy-mcp-host" }
-bevy-mcp-server = { path = "../Bevy-mcp/crates/bevy-mcp-server" }
-rmcp = { version = "3", features = ["server", "transport-io"] }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
 ```
 
-Equivalent matching git dependencies are also fine. Avoid mixing published and source versions across the three bevy-mcp crates.
-
-## 2. Embed the full agent server
-
-`AgentBevyMcpServer` combines the base, advanced, and debugger/playtest routers. `BevyMcpServer` is intentionally the smaller base/legacy surface.
+Enable the bridge supplied by the supervisor:
 
 ```rust
 use bevy::prelude::*;
-use bevy_mcp_core::queue::{McpIngressQueue, McpResultQueue};
 use bevy_mcp_host::{BevyMcpPlugin, McpPermissions};
-use bevy_mcp_server::AgentBevyMcpServer;
-use bevy_mcp_server::tools::BevyMcpState;
-use rmcp::{ServiceExt, transport::stdio};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let ingress = McpIngressQueue::default();
-    let results = McpResultQueue::default();
-    let state = BevyMcpState::embedded(ingress.clone(), results.clone());
+fn main() {
+    let mcp = BevyMcpPlugin::new()
+        .with_permissions(McpPermissions::full())
+        .with_supervisor_bridge_from_env()
+        .expect("supervisor environment is required in supervised mode");
 
-    std::thread::spawn(move || {
-        App::new()
-            .add_plugins(DefaultPlugins)
-            .add_plugins(
-                BevyMcpPlugin::new()
-                    .with_queues(ingress, results)
-                    .with_permissions(McpPermissions::read_only()),
-            )
-            .run();
-    });
-
-    let server = AgentBevyMcpServer::new(state).serve(stdio()).await?;
-    server.waiting().await?;
-    Ok(())
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(mcp)
+        .run();
 }
 ```
 
-Start with `read_only()` when exploring. Use `write()` for reflected/state mutation and `full()` when the agent must inject input, run interactive playtests, or control the runtime. The `capabilities` tool reports what is implemented, available, and allowed in the current game.
+### 2. Build the persistent supervisor
 
-## 3. Build the game with Cargo
+From the bevy-mcp checkout:
 
 ```bash
-cargo build
+cargo build -p bevy-mcp-supervisor --bin bevy-mcp
 ```
 
-Cargo build/check/test are development-shell operations. The embedded MCP tools named `build_check`, `build`, and `test` are deliberately unavailable in the current host and return `BUILD_NOT_AVAILABLE`.
-
-## 4. Point your MCP client at the game binary
+### 3. Point the MCP client at the supervisor
 
 ```json
 {
   "mcpServers": {
     "bevy": {
-      "command": "/absolute/path/to/your-game/target/debug/your-game-name",
-      "args": []
+      "command": "/absolute/path/to/Bevy-mcp/target/debug/bevy-mcp",
+      "args": [
+        "--project-dir",
+        "/absolute/path/to/your-bevy-game"
+      ]
     }
   }
 }
 ```
 
-The game binary is both the Bevy application and the stdio MCP server. Client-specific configuration lives under [docs/guides](docs/guides/).
+If the workspace has more than one binary target, pass `package` and/or `bin` to build/rebuild tools instead of relying on automatic target selection.
 
-## 5. Verify the live contract
+### 4. Verify and launch the development loop
 
 Start with:
 
-- `capabilities` — authoritative live feature/availability/permission contract
-- `health` — connection/runtime health
-- `world_summary` — ECS overview
-- `world_context_scan` — richer agent-oriented context
-- `entity_query` / `component_get` — inspect concrete state
+- `development_status` — compact diagnosis and recommended next action
+- `capabilities` — complete implementation/availability/permission contract
 
-For autonomous workflows, continue with assertions, native interaction, watchpoints/playtests, checkpoints/replay, and atomic reflected mutation batches as reported available by `capabilities`.
+If no managed game is running, `rebuild_restart` can check, build, launch the Cargo-reported executable, authenticate the bridge, and wait for host readiness. Poll its operation ID with `operation_status`.
 
-## 6. Make your game agent-aware
+The normal loop is:
 
-Reflection works immediately for registered reflected types, but the strongest workflows use a small game adapter: semantic actions, typed state, checkpoint resources, and explicit system-access metadata. See [Agent adapter checklist](docs/agent-adapter.md).
+```text
+edit source -> rebuild_restart -> operation_status -> development_status
+            -> inspect/interact/assert/debug -> repeat
+```
+
+See [Supervised mode and autonomous rebuild/restart](docs/supervised-mode.md) for lifecycle permissions, failure semantics, process evidence, target discovery, and troubleshooting.
+
+## Embedded mode
+
+Use embedded mode when the game does not need to survive source rebuilds inside the same MCP session. It requires `bevy-mcp-core`, `bevy-mcp-host`, and `bevy-mcp-server`; create `AgentBevyMcpServer` with shared ingress/result queues and point the MCP client directly at the resulting game binary.
+
+The client-specific guides under [docs/guides](docs/guides/) document this embedded setup in detail.
+
+In embedded mode, Cargo build/check/test and OS process lifecycle remain external to the game process. Call `capabilities` rather than assuming supervisor-only tools are available.
+
+## Make the game agent-aware
+
+Reflection works immediately for registered reflected types, but the strongest workflows add semantic actions, typed state, checkpoint resources, capture targets, and exact system-access metadata. See the [Agent adapter checklist](docs/agent-adapter.md).

@@ -155,7 +155,7 @@ pub struct DebugPlaytestPlan {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum DebugRequest {
     WatchpointAdd {
-        spec: WatchpointSpec,
+        spec: Box<WatchpointSpec>,
     },
     WatchpointList,
     WatchpointRemove {
