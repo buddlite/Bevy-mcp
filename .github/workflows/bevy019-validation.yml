@@ -37,6 +37,7 @@ jobs:
           python .github/bevy019_supervisor_clippy.py
           python .github/bevy019_pointer_optional.py
           python .github/bevy019_time_step_scale.py
+          python .github/bevy019_schedule_conflicts.py
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
@@ -52,8 +53,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/bevy019_apply.py .github/bevy019_supervisor_clippy.py .github/bevy019_pointer_optional.py .github/bevy019_time_step_scale.py .github/workflows/bevy019-validation.yml
+          git rm .github/bevy019_apply.py .github/bevy019_supervisor_clippy.py .github/bevy019_pointer_optional.py .github/bevy019_time_step_scale.py .github/bevy019_schedule_conflicts.py .github/workflows/bevy019-validation.yml
           git add -- \
+            crates/bevy-mcp-host/src/advanced.rs \
             crates/bevy-mcp-host/src/debugger.rs \
             crates/bevy-mcp-host/src/operations.rs \
             crates/bevy-mcp-host/src/plugin.rs \
@@ -67,6 +69,7 @@ jobs:
             crates/bevy-mcp-host/src/systems/resources.rs \
             crates/bevy-mcp-host/src/systems/runtime.rs \
             crates/bevy-mcp-host/src/lib.rs \
+            crates/bevy-mcp-host/tests/intelligence.rs \
             crates/bevy-mcp-supervisor/src/backend.rs \
             crates/bevy-mcp-supervisor/src/cargo_executor.rs \
             crates/bevy-mcp-supervisor/src/process_manager.rs \
