@@ -122,6 +122,7 @@ jobs:
             docs/README.md \
             docs/supervised-mode.md \
             docs/supervisor-implementation-spec.md \
+            docs/tool-capabilities.md \
             docs/guides/claude-code.md \
             docs/guides/claude-desktop.md \
             docs/guides/cline.md \
