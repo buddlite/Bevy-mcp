@@ -49,6 +49,29 @@ replace_once(
             let mut debugger = world.resource_mut::<McpDebugger>();
 ''',
 )
+replace_once(
+    "crates/bevy-mcp-host/tests/agent_debugger.rs",
+    '''        DebugRequest::WatchpointAdd {
+            spec: WatchpointSpec {
+                name: "frame-zero".into(),
+                condition: DebugCondition::FrameAtLeast { frame: 0 },
+                pause_on_trigger: false,
+                once: true,
+                evidence: no_screenshot_evidence(),
+            },
+        },
+''',
+    '''        DebugRequest::WatchpointAdd {
+            spec: Box::new(WatchpointSpec {
+                name: "frame-zero".into(),
+                condition: DebugCondition::FrameAtLeast { frame: 0 },
+                pause_on_trigger: false,
+                once: true,
+                evidence: no_screenshot_evidence(),
+            }),
+        },
+''',
+)
 
 # aggregate_world_bounds is an implementation detail used only by the camera module;
 # its previous pub(crate) visibility exposed a private return type and produced a warning.
