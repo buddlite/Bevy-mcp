@@ -666,11 +666,8 @@ mod permission_tests {
             ..CargoExecutorConfig::new(env!("CARGO_MANIFEST_DIR"))
         })
         .await;
-        let server = SupervisorToolServer::new(
-            manager.clone(),
-            cargo,
-            SupervisorPermissions::read_only(),
-        );
+        let server =
+            SupervisorToolServer::new(manager.clone(), cargo, SupervisorPermissions::read_only());
         (server, manager)
     }
 
