@@ -137,3 +137,11 @@ replace_once(
 )
 path = Path(".github/workflows/ci.yml")
 path.write_text(path.read_text(encoding="utf-8").replace("actions/checkout@v4", "actions/checkout@v7"), encoding="utf-8")
+
+# Bounded operation retention is observable: old terminal IDs may eventually be
+# evicted, so document that contract next to operation_status guidance.
+replace_once(
+    "docs/supervised-mode.md",
+    "Poll it using `operation_status`. `operation_cancel` can cancel the active Cargo child immediately; lifecycle-stage cancellation is observed at safe boundaries so the supervisor does not intentionally leave a half-transitioned process tree.\n",
+    "Poll it using `operation_status`. `operation_cancel` can cancel the active Cargo child immediately; lifecycle-stage cancellation is observed at safe boundaries so the supervisor does not intentionally leave a half-transitioned process tree. Supervisor operation history is bounded: the oldest terminal Cargo and `rebuild_restart` records may be evicted after sustained use, while active operations are never pruned.\n",
+)
