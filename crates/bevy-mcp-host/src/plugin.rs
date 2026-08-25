@@ -22,6 +22,7 @@ use crate::supervisor_bridge::{
     SupervisorBridgeConfig, SupervisorShutdownSignal, spawn_supervisor_bridge,
     supervisor_shutdown_system,
 };
+use crate::synthetic_input::{self, McpSyntheticInputQueue};
 use crate::systems;
 
 /// The main Bevy plugin that bridges MCP and ECS.
@@ -166,10 +167,18 @@ impl Plugin for BevyMcpPlugin {
         app.init_resource::<McpRecorder>();
         app.init_resource::<McpDebugger>();
         app.init_resource::<McpInteractionState>();
+        app.init_resource::<McpSyntheticInputQueue>();
         let pointer_entity = app.world_mut().spawn(mcp_pointer_id()).id();
         app.world_mut()
             .resource_mut::<McpInteractionState>()
             .set_pointer_entity(pointer_entity);
+
+        // Bevy updates Time<Virtual> in First::TimeSystems. Apply our persisted pause/step/speed
+        // state immediately before that clock update so each stepped frame has deterministic delta.
+        app.add_systems(
+            First,
+            systems::runtime_system.before(bevy::time::TimeSystems),
+        );
 
         app.add_systems(
             PreUpdate,
@@ -177,27 +186,38 @@ impl Plugin for BevyMcpPlugin {
                 supervisor_shutdown_system.before(debugger::debug_ingress_system),
                 debugger::debug_ingress_system
                     .before(advanced::advanced_ingress_system)
+                    .before(synthetic_input::synthetic_input_ingress_system)
                     .before(systems::ingress_system)
                     .in_set(McpSet::Ingress),
                 advanced::advanced_ingress_system
+                    .before(synthetic_input::synthetic_input_ingress_system)
+                    .before(systems::ingress_system)
+                    .in_set(McpSet::Ingress),
+                synthetic_input::synthetic_input_ingress_system
                     .before(systems::ingress_system)
                     .in_set(McpSet::Ingress),
                 systems::ingress_system.in_set(McpSet::Ingress),
-                systems::runtime_system.in_set(McpSet::Apply),
             ),
         );
 
         app.add_systems(
             PreUpdate,
             (
+                synthetic_input::synthetic_input_apply_system
+                    .after(bevy::input::InputSystems)
+                    .after(McpSet::Ingress),
                 interaction::interaction_input_system
                     .after(McpSet::Ingress)
+                    .before(bevy::picking::PickingSystems::ProcessInput),
+                synthetic_input::synthetic_pointer_button_system
+                    .after(bevy::input::InputSystems)
+                    .after(interaction::interaction_input_system)
                     .before(bevy::picking::PickingSystems::ProcessInput),
                 interaction::interaction_result_system.after(bevy::picking::PickingSystems::Last),
             ),
         );
 
-        // Deferred mutations run in Update (has &mut World).
+        // General reflected ECS/resource mutations run in Update after input state has settled.
         app.add_systems(Update, systems::deferred_apply_system);
 
         app.add_systems(
