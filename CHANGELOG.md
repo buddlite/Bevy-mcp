@@ -29,11 +29,12 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Agent-facing mutation, interaction, assertion, debugging, and replay flows are documented around the loop `inspect -> mutate -> step/interact -> assert -> diagnose -> replay/checkpoint -> retry`.
 - In supervised mode, build/test and OS process lifecycle authority live in the persistent supervisor rather than the Bevy host; embedded mode retains the existing game-local permission boundary and externally owned lifecycle.
 - The supervised `capabilities` response now merges the live Bevy-host contract with supervisor Cargo, process, and `rebuild_restart` availability instead of exposing the embedded build/lifecycle contract unchanged.
-
 - Repository CI now enforces rustfmt and Clippy in addition to cross-platform compile/test coverage.
 - Supervisor Cargo and rebuild/restart operation histories are bounded by evicting the oldest terminal records.
 - Onboarding and contributor documentation now distinguishes supervised and embedded execution modes consistently.
 - Stage-numbered supervisor acceptance tests were renamed to reflect their continuing cross-stage role.
+- Bevy integration is aligned with Bevy 0.19.1 semantics: the workspace MSRV matches Bevy, synthetic key/mouse/gamepad input follows Bevy's current input lifecycle and per-entity gamepad model, invalid virtual-time scales are rejected safely, and paused frame stepping respects the configured time scale.
+- Hierarchy reparenting now validates parents, self-parenting, and cycles before mutation; reflected short-name lookup rejects ambiguous registrations; schedule/system conflict inspection resolves names safely after Bevy has initialized the executable schedule.
 
 ### Current limitations
 
