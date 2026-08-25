@@ -26,3 +26,16 @@ mod ui;
 
 pub use dispatch::{deferred_apply_system, ingress_system};
 pub use runtime::{diagnostics_system, runtime_system};
+
+/// Resolve a reflected type using Bevy's indexed registry APIs.
+///
+/// Full type paths always win. Short paths are accepted only when Bevy considers
+/// them unambiguous; `get_with_short_type_path` returns `None` for collisions.
+pub(crate) fn find_type_registration<'a>(
+    registry: &'a bevy::reflect::TypeRegistry,
+    name: &str,
+) -> Option<&'a bevy::reflect::TypeRegistration> {
+    registry
+        .get_with_type_path(name)
+        .or_else(|| registry.get_with_short_type_path(name))
+}
