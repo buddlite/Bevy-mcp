@@ -9,6 +9,8 @@ pub mod rebuild_restart;
 #[cfg(test)]
 mod cargo_executor_acceptance;
 #[cfg(test)]
+mod permission_acceptance;
+#[cfg(test)]
 mod supervisor_acceptance;
 
 pub use backend::{
