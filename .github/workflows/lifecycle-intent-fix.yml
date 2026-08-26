@@ -54,6 +54,7 @@ jobs:
           if old not in text:
               raise SystemExit('RecoveryAction struct marker not found')
           text = text.replace(old, new, 1)
+          text = text.replace('schema_version: 1,', 'schema_version: 2,', 1)
 
           start = text.index('fn recovery_action(')
           end = text.index('\nfn summary(', start)
@@ -79,8 +80,7 @@ jobs:
                       reason: failure
                           .map(|failure| failure.message.clone())
                           .unwrap_or_else(|| "The most recent Cargo check/build failed".to_string()),
-                      // A status poll must never authorize another build/restart loop.
-                      tool: None,
+                      tool: Some("rebuild_restart".to_string()),
                       automatic_safe: false,
                   },
                   DevelopmentState::TestFailed => RecoveryAction {
@@ -88,7 +88,7 @@ jobs:
                       reason: failure
                           .map(|failure| failure.message.clone())
                           .unwrap_or_else(|| "The most recent Cargo test failed".to_string()),
-                      tool: None,
+                      tool: Some("test".to_string()),
                       automatic_safe: false,
                   },
                   DevelopmentState::StartupFailed
@@ -196,8 +196,8 @@ jobs:
               }
 
               #[test]
-              fn build_failure_does_not_authorize_rebuild_restart() {
-                  let recovery = recovery_action(
+              fn mutating_recovery_recommendations_require_explicit_intent() {
+                  let compile = recovery_action(
                       DevelopmentState::CompileFailed,
                       true,
                       true,
@@ -205,8 +205,19 @@ jobs:
                       None,
                       None,
                   );
-                  assert_eq!(recovery.tool, None);
-                  assert!(!recovery.automatic_safe);
+                  assert_eq!(compile.tool.as_deref(), Some("rebuild_restart"));
+                  assert!(!compile.automatic_safe);
+
+                  let test = recovery_action(
+                      DevelopmentState::TestFailed,
+                      true,
+                      true,
+                      SupervisorPermissions::full(),
+                      None,
+                      None,
+                  );
+                  assert_eq!(test.tool.as_deref(), Some("test"));
+                  assert!(!test.automatic_safe);
               }
           }
           '''
