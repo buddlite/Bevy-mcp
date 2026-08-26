@@ -2,7 +2,7 @@
 
 Get the current `v.01` development build of bevy-mcp connected to a Bevy 0.19 game.
 
-> `v.01` is an unreleased development branch and may be ahead of crates.io. Keep the bevy-mcp crates/binary on one matching source revision.
+> `v.01` is an unreleased development branch and may be ahead of crates.io. Keep the bevy-mcp crates/binary on one matching source revision or release tag.
 
 ## Choose an execution mode
 
@@ -40,21 +40,30 @@ fn main() {
 }
 ```
 
-### 2. Build the persistent supervisor
+### 2. Get the persistent supervisor
 
-From the bevy-mcp checkout:
+For tagged releases, the easiest path is to download the prebuilt supervisor from the repository's **Releases** page:
+
+- Windows x86_64: `bevy-mcp-windows-x86_64.zip`
+- Linux x86_64: `bevy-mcp-linux-x86_64.tar.gz`
+
+Each archive has a matching `.sha256` checksum file. See [Install bevy-mcp](docs/install.md) for extraction and verification instructions.
+
+If you are working directly from the current `v.01` source branch, or need another platform, build it locally instead:
 
 ```bash
-cargo build -p bevy-mcp-supervisor --bin bevy-mcp
+cargo build --locked -p bevy-mcp-supervisor --bin bevy-mcp
 ```
 
 ### 3. Point the MCP client at the supervisor
+
+Using a downloaded release binary:
 
 ```json
 {
   "mcpServers": {
     "bevy": {
-      "command": "/absolute/path/to/Bevy-mcp/target/debug/bevy-mcp",
+      "command": "/absolute/path/to/bevy-mcp",
       "args": [
         "--project-dir",
         "/absolute/path/to/your-bevy-game"
@@ -63,6 +72,8 @@ cargo build -p bevy-mcp-supervisor --bin bevy-mcp
   }
 }
 ```
+
+On Windows, the command points to `bevy-mcp.exe`. For a local debug build from the repository, point it at `target/debug/bevy-mcp` instead.
 
 If the workspace has more than one binary target, pass `package` and/or `bin` to build/rebuild tools instead of relying on automatic target selection.
 
