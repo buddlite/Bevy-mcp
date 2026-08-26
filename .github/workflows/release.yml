@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    branches: [v.01]
+    paths:
+      - ".github/workflows/release.yml"
+      - "crates/bevy-mcp-supervisor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "README.md"
+      - "QUICKSTART.md"
+      - "docs/install.md"
   workflow_dispatch:
     inputs:
       tag:
@@ -12,10 +22,10 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -23,7 +33,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Package ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,28 +41,16 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: bevy-mcp-linux-x86_64.tar.gz
-            binary: bevy-mcp
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: bevy-mcp-windows-x86_64.zip
-            binary: bevy-mcp.exe
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Resolve tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@v7
         with:
-          ref: ${{ steps.tag.outputs.name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,7 +67,7 @@ jobs:
             libxkbcommon-dev
 
       - name: Build supervisor binary
-        run: cargo build --locked --release --target ${{ matrix.target }} -p bevy-mcp-supervisor
+        run: cargo build --locked --release --target ${{ matrix.target }} -p bevy-mcp-supervisor --bin bevy-mcp
 
       - name: Stage Linux archive
         if: runner.os == 'Linux'
@@ -78,6 +76,7 @@ jobs:
           mkdir -p dist/bevy-mcp
           cp "target/${{ matrix.target }}/release/bevy-mcp" dist/bevy-mcp/bevy-mcp
           cp README.md QUICKSTART.md LICENSE-MIT LICENSE-APACHE dist/bevy-mcp/
+          cp docs/install.md dist/bevy-mcp/INSTALL.md
           tar -C dist -czf "dist/${{ matrix.archive }}" bevy-mcp
           (cd dist && sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256")
 
@@ -88,9 +87,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/bevy-mcp | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/bevy-mcp.exe" dist/bevy-mcp/bevy-mcp.exe
           Copy-Item README.md, QUICKSTART.md, LICENSE-MIT, LICENSE-APACHE dist/bevy-mcp/
-          Compress-Archive -Path dist/bevy-mcp/* -DestinationPath "dist/${{ matrix.archive }}"
+          Copy-Item docs/install.md dist/bevy-mcp/INSTALL.md
+          Compress-Archive -Path dist/bevy-mcp -DestinationPath "dist/${{ matrix.archive }}"
           $hash = (Get-FileHash "dist/${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  ${{ matrix.archive }}" | Set-Content -NoNewline "dist/${{ matrix.archive }}.sha256"
+          "$hash  ${{ matrix.archive }}" | Set-Content "dist/${{ matrix.archive }}.sha256"
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@v6
@@ -103,32 +103,37 @@ jobs:
 
   publish:
     name: Publish GitHub Release
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Resolve tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          generate_release_notes: true
-          prerelease: ${{ contains(steps.tag.outputs.name, '-alpha') || contains(steps.tag.outputs.name, '-beta') || contains(steps.tag.outputs.name, '-rc') }}
-          files: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*.sha256
+        shell: bash
+        run: |
+          prerelease=()
+          case "$RELEASE_TAG" in
+            *-alpha*|*-beta*|*-rc*) prerelease=(--prerelease) ;;
+          esac
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              "${prerelease[@]}"
+          fi
