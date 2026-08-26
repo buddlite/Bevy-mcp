@@ -59,9 +59,9 @@ jobs:
           end = text.index('\nfn summary(', start)
           replacement = r'''fn recovery_action(
               state: DevelopmentState,
-              cargo_available: bool,
+              _cargo_available: bool,
               _configured_launch_target: bool,
-              permissions: SupervisorPermissions,
+              _permissions: SupervisorPermissions,
               active: Option<&DevelopmentOperationRef>,
               failure: Option<&DevelopmentFailure>,
           ) -> RecoveryAction {
