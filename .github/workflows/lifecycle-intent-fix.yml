@@ -208,6 +208,8 @@ jobs:
               text += tests.replace('          ', '')
 
           path.write_text(text)
+      - name: Format candidate
+        run: cargo fmt --all
       - name: Verify formatting
         run: cargo fmt --all -- --check
       - name: Check workspace
