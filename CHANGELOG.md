@@ -21,6 +21,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Supervisor Cargo execution for `build_check`, `build`, and `test`, with `cargo metadata` target discovery, typed package/bin/profile/features/test-filter parameters, structured compiler diagnostics and executable artifacts, bounded output, asynchronous `supervisor:*` operation IDs, cancellation/timeouts, one-operation-at-a-time locking, and supervisor-local permissions.
 - Stage 4 supervised development-cycle tooling: asynchronous `rebuild_restart`, conservative check-before-stop sequencing, Cargo-artifact launch, new instance/connection validation, merged host/supervisor capabilities, and bounded startup/crash evidence.
 - Agent-oriented `development_status` diagnostics that collapse process/Cargo/rebuild state into one normalized development state, current generation identity, latest structured failure evidence, and a deterministic recommended recovery action.
+- Automated tagged GitHub Releases with prebuilt x86_64 Windows/Linux `bevy-mcp` supervisor archives, SHA-256 checksums, generated release notes, prerelease handling, and PR-time package validation.
 
 ### Changed
 
@@ -36,6 +37,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Bevy integration is aligned with Bevy 0.19.1 semantics: the workspace MSRV matches Bevy, synthetic key/mouse/gamepad input follows Bevy's current input lifecycle and per-entity gamepad model, invalid virtual-time scales are rejected safely, and paused frame stepping respects the configured time scale.
 - Hierarchy reparenting now validates parents, self-parenting, and cycles before mutation; reflected short-name lookup rejects ambiguous registrations; schedule/system conflict inspection resolves names safely after Bevy has initialized the executable schedule.
 - `development_status` no longer recommends `process_launch` or `rebuild_restart` from passive `stopped`, `game_exited`, or `idle` states; lifecycle-changing recovery suggestions are explicitly marked `automatic_safe: false` so polling cannot become an implicit restart policy.
+- Supervised-mode onboarding now prefers downloading a matching tagged supervisor binary, while retaining source builds as the fallback for development branches and unsupported platforms.
 
 ### Current limitations
 
