@@ -20,7 +20,13 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install Bevy Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev
       - name: Apply lifecycle-intent patch
         shell: python
         run: |
