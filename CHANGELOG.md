@@ -35,6 +35,7 @@ The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) con
 - Stage-numbered supervisor acceptance tests were renamed to reflect their continuing cross-stage role.
 - Bevy integration is aligned with Bevy 0.19.1 semantics: the workspace MSRV matches Bevy, synthetic key/mouse/gamepad input follows Bevy's current input lifecycle and per-entity gamepad model, invalid virtual-time scales are rejected safely, and paused frame stepping respects the configured time scale.
 - Hierarchy reparenting now validates parents, self-parenting, and cycles before mutation; reflected short-name lookup rejects ambiguous registrations; schedule/system conflict inspection resolves names safely after Bevy has initialized the executable schedule.
+- `development_status` no longer recommends `process_launch` or `rebuild_restart` from passive `stopped`, `game_exited`, or `idle` states; lifecycle-changing recovery suggestions are explicitly marked `automatic_safe: false` so polling cannot become an implicit restart policy.
 
 ### Current limitations
 
