@@ -71,6 +71,8 @@ pub struct RecoveryAction {
     pub action: String,
     pub reason: String,
     pub tool: Option<String>,
+    /// True only when repeatedly following this recommendation cannot mutate build or game lifecycle state.
+    pub automatic_safe: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,7 +169,7 @@ fn compose_status(
     let summary = summary(state, active_operation.as_ref(), current_failure);
 
     DevelopmentStatus {
-        schema_version: 1,
+        schema_version: 2,
         state,
         summary,
         process,
@@ -532,9 +534,9 @@ fn classify_state(
 
 fn recovery_action(
     state: DevelopmentState,
-    cargo_available: bool,
-    configured_launch_target: bool,
-    permissions: SupervisorPermissions,
+    _cargo_available: bool,
+    _configured_launch_target: bool,
+    _permissions: SupervisorPermissions,
     active: Option<&DevelopmentOperationRef>,
     failure: Option<&DevelopmentFailure>,
 ) -> RecoveryAction {
@@ -545,6 +547,7 @@ fn recovery_action(
                 .map(|operation| format!("{} is still {}", operation.operation_id, operation.state))
                 .unwrap_or_else(|| "A supervisor operation is still running".to_string()),
             tool: Some("operation_status".to_string()),
+            automatic_safe: true,
         },
         DevelopmentState::CompileFailed => RecoveryAction {
             action: "fix_compile_errors".to_string(),
@@ -552,6 +555,7 @@ fn recovery_action(
                 .map(|failure| failure.message.clone())
                 .unwrap_or_else(|| "The most recent Cargo check/build failed".to_string()),
             tool: Some("rebuild_restart".to_string()),
+            automatic_safe: false,
         },
         DevelopmentState::TestFailed => RecoveryAction {
             action: "fix_failing_tests".to_string(),
@@ -559,6 +563,7 @@ fn recovery_action(
                 .map(|failure| failure.message.clone())
                 .unwrap_or_else(|| "The most recent Cargo test failed".to_string()),
             tool: Some("test".to_string()),
+            automatic_safe: false,
         },
         DevelopmentState::StartupFailed
         | DevelopmentState::GameCrashed
@@ -568,59 +573,55 @@ fn recovery_action(
                 .map(|failure| failure.message.clone())
                 .unwrap_or_else(|| "The game process or host is unhealthy".to_string()),
             tool: Some("process_evidence".to_string()),
+            automatic_safe: true,
         },
-        DevelopmentState::Stopped | DevelopmentState::GameExited | DevelopmentState::Idle => {
-            if cargo_available
-                && permissions.cargo_check
-                && permissions.cargo_build
-                && permissions.process_launch
-                && permissions.process_stop
-            {
-                RecoveryAction {
-                    action: "rebuild_and_launch".to_string(),
-                    reason: "No ready managed game is running and the supervised rebuild path is available".to_string(),
-                    tool: Some("rebuild_restart".to_string()),
-                }
-            } else if configured_launch_target && permissions.process_launch {
-                RecoveryAction {
-                    action: "launch_configured_game".to_string(),
-                    reason: "A managed launch target is configured".to_string(),
-                    tool: Some("process_launch".to_string()),
-                }
-            } else {
-                RecoveryAction {
-                    action: "fix_project_or_permissions".to_string(),
-                    reason: "No currently permitted launch path is available".to_string(),
-                    tool: Some("capabilities".to_string()),
-                }
-            }
-        }
+        DevelopmentState::Stopped => RecoveryAction {
+            action: "await_explicit_launch".to_string(),
+            reason: "The managed game is stopped. Starting it requires an explicit process_launch or rebuild_restart request; status polling will not relaunch it.".to_string(),
+            tool: None,
+            automatic_safe: false,
+        },
+        DevelopmentState::GameExited => RecoveryAction {
+            action: "await_explicit_launch".to_string(),
+            reason: "The managed game exited without an active replacement. A new game generation requires explicit launch/rebuild intent.".to_string(),
+            tool: None,
+            automatic_safe: false,
+        },
+        DevelopmentState::Idle => RecoveryAction {
+            action: "await_explicit_launch".to_string(),
+            reason: "No game is ready. Launching or rebuilding a game requires explicit agent/user intent rather than a recovery recommendation.".to_string(),
+            tool: None,
+            automatic_safe: false,
+        },
         DevelopmentState::ProjectUnavailable => RecoveryAction {
             action: "fix_project_configuration".to_string(),
             reason: "Cargo project metadata is unavailable".to_string(),
             tool: Some("capabilities".to_string()),
+            automatic_safe: true,
         },
         DevelopmentState::PermissionBlocked => RecoveryAction {
             action: "enable_supervisor_permissions".to_string(),
             reason: "The required supervisor operation is disabled by policy".to_string(),
             tool: Some("capabilities".to_string()),
+            automatic_safe: true,
         },
         DevelopmentState::ExternalGame => RecoveryAction {
             action: "use_external_lifecycle".to_string(),
-            reason:
-                "The connected game is externally owned; the supervisor will not stop or rebuild it"
-                    .to_string(),
+            reason: "The connected game is externally owned; the supervisor will not stop or rebuild it".to_string(),
             tool: Some("process_status".to_string()),
+            automatic_safe: true,
         },
         DevelopmentState::Starting => RecoveryAction {
             action: "wait_for_readiness".to_string(),
-            reason: "The managed game is still starting".to_string(),
+            reason: "The managed game is still starting and has not reached host readiness".to_string(),
             tool: Some("development_status".to_string()),
+            automatic_safe: true,
         },
         DevelopmentState::Ready => RecoveryAction {
             action: "continue_agent_loop".to_string(),
             reason: "The managed game is connected and host-ready".to_string(),
             tool: None,
+            automatic_safe: true,
         },
     }
 }
@@ -955,5 +956,64 @@ mod tests {
             status.last_failure.unwrap().stderr_tail[0].text,
             "panic in startup"
         );
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_intent_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn passive_stopped_states_never_recommend_relaunch_tools() {
+        for state in [
+            DevelopmentState::Stopped,
+            DevelopmentState::GameExited,
+            DevelopmentState::Idle,
+        ] {
+            let recovery =
+                recovery_action(state, true, true, SupervisorPermissions::full(), None, None);
+            assert_eq!(recovery.action, "await_explicit_launch");
+            assert_eq!(recovery.tool, None);
+            assert!(!recovery.automatic_safe);
+        }
+    }
+
+    #[test]
+    fn diagnostic_recommendations_are_marked_automatic_safe() {
+        let recovery = recovery_action(
+            DevelopmentState::GameCrashed,
+            true,
+            true,
+            SupervisorPermissions::full(),
+            None,
+            None,
+        );
+        assert_eq!(recovery.tool.as_deref(), Some("process_evidence"));
+        assert!(recovery.automatic_safe);
+    }
+
+    #[test]
+    fn mutating_recovery_recommendations_require_explicit_intent() {
+        let compile = recovery_action(
+            DevelopmentState::CompileFailed,
+            true,
+            true,
+            SupervisorPermissions::full(),
+            None,
+            None,
+        );
+        assert_eq!(compile.tool.as_deref(), Some("rebuild_restart"));
+        assert!(!compile.automatic_safe);
+
+        let test = recovery_action(
+            DevelopmentState::TestFailed,
+            true,
+            true,
+            SupervisorPermissions::full(),
+            None,
+            None,
+        );
+        assert_eq!(test.tool.as_deref(), Some("test"));
+        assert!(!test.automatic_safe);
     }
 }
